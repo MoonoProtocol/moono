@@ -15,10 +15,8 @@ describe("moono", () => {
   const PAGE_SIZE = 32;
 
 
-  async function ensureProtocolInitialized(
-    program: Program<Moono>,
-    provider: anchor.AnchorProvider
-  ): Promise<anchor.web3.PublicKey> {
+  async function ensureProtocolInitialized() {
+    console.log("ensureProtocolInitialized called", program.programId);
     const [protocolPda] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("protocol")],
       program.programId
@@ -36,11 +34,11 @@ describe("moono", () => {
         })
         .rpc();
       return [protocolPda, tx];
+    } else {
+      console.log("Existiong Protocol:", existing);
     }
 
     const protocolAccount = await program.account.protocolConfig.fetch(protocolPda);
-
-    console.log("protocol:", protocolAccount);
 
     if (!protocolAccount.authority.equals(provider.wallet.publicKey)) {
       throw new Error("Authority mismatch");
@@ -60,7 +58,7 @@ describe("moono", () => {
   });
 
   it("initialize_asset_pool", async () => {
-    const res = ensureProtocolInitialized();
+    const res = await ensureProtocolInitialized();
     const protocolPda = res[0];
 
     const mint = await createMint(
@@ -118,7 +116,7 @@ describe("moono", () => {
   });
 
   it("set_asset_pool_flags", async () => {
-    const res = ensureProtocolInitialized();
+    const res = await ensureProtocolInitialized();
     const protocolPda = res[0];
 
     const mint = await createMint(
@@ -172,7 +170,7 @@ describe("moono", () => {
   });
 
   it("initialize_tick_page", async () => {
-    const res = ensureProtocolInitialized();
+    const res = await ensureProtocolInitialized();
     const protocolPda = res[0];
 
     const mint = await createMint(
@@ -234,7 +232,7 @@ describe("moono", () => {
     const tick = 10;
     const amount = new anchor.BN(1000);
 
-    const res = ensureProtocolInitialized();
+    const res = await ensureProtocolInitialized();
     const protocolPda = res[0];
 
     const mint = await createMint(
