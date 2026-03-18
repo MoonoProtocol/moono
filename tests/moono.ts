@@ -8,10 +8,42 @@ describe("moono", () => {
   anchor.setProvider(provider);
 
   const program = anchor.workspace.moono as Program<Moono>;
+  const wallet = provider.wallet as anchor.Wallet & {
+    payer: anchor.web3.Keypair;
+  };
+
+  const PAGE_SIZE = 32;
+
+
+  async function ensureProtocolInitialized(
+    program: Program<Moono>,
+    provider: anchor.AnchorProvider
+  ): Promise<anchor.web3.PublicKey> {
+    const [protocolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("protocol")],
+      program.programId
+    );
+
+    const existing = await provider.connection.getAccountInfo(protocolPda);
+
+    if (!existing) {
+      await program.methods
+        .initializeProtocol()
+        .accounts({
+          protocol: protocolPda,
+          authority: provider.wallet.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .rpc();
+    }
+
+    return protocolPda;
+  }
+
 
   it("ping", async () => {
-    const sig = await program.methods.ping().rpc();
-    console.log("tx:", sig);
+    const tx = await program.methods.ping().rpc();
+    console.log("tx:", tx);
   });
 
   it("initialize_protocol", async () => {
@@ -28,7 +60,6 @@ describe("moono", () => {
         system_program: anchor.web3.SystemProgram.programId
       })
       .rpc();
-
     console.log("tx:", tx);
 
     const protocolAccount = await program.account.protocolConfig.fetch(protocolPda);
@@ -49,6 +80,15 @@ describe("moono", () => {
       [Buffer.from("protocol")],
       program.programId
     );
+
+    await program.methods
+      .initializeProtocol()
+      .accounts({
+        protocol: protocolPda,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
 
     const mint = await createMint(
       provider.connection,
@@ -73,7 +113,6 @@ describe("moono", () => {
         system_program: anchor.web3.SystemProgram.programId
       })
       .rpc();
-
     console.log("tx:", tx);
 
     const assetPool = await program.account.assetPool.fetch(assetPoolPda);
@@ -111,6 +150,15 @@ describe("moono", () => {
       program.programId
     );
 
+    await program.methods
+      .initializeProtocol()
+      .accounts({
+        protocol: protocolPda,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
     const mint = await createMint(
       provider.connection,
       provider.wallet.payer,
@@ -142,7 +190,6 @@ describe("moono", () => {
         authority: provider.wallet.publicKey,
       })
       .rpc();
-
     console.log("tx:", tx);
 
     const assetPool = await program.account.assetPool.fetch(assetPoolPda);
@@ -161,4 +208,164 @@ describe("moono", () => {
       throw new Error("allowBorrows should be true");
     }
   });
+
+  it("initialize_tick_page", async () => {
+    const [protocolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("protocol")],
+      program.programId
+    );
+
+    await program.methods
+      .initializeProtocol()
+      .accounts({
+        protocol: protocolPda,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
+    const mint = await createMint(
+      provider.connection,
+      wallet.payer,
+      provider.wallet.publicKey,
+      null,
+      6
+    );
+
+    const [assetPoolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("asset_pool"), mint.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .initializeAssetPool()
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        mint,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
+    const pageIndex = 0;
+
+    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("tick_page"),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    const tx = await program.methods
+      .initializeTickPage(pageIndex)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        tickPage: tickPagePda,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+    console.log("tx:", tx);
+
+    const page = await program.account.tickPage.fetch(tickPagePda);
+
+    if (page.pageIndex !== pageIndex) {
+      throw new Error("Wrong page index");
+    }
+  });
+
+
+  it("mock_deposit_to_tick", async () => {
+    const tick = 10;
+    const amount = new anchor.BN(1000);
+
+    const [protocolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("protocol")],
+      program.programId
+    );
+
+    await program.methods
+      .initializeProtocol()
+      .accounts({
+        protocol: protocolPda,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
+    const mint = await createMint(
+      provider.connection,
+      wallet.payer,
+      provider.wallet.publicKey,
+      null,
+      6
+    );
+
+    const [assetPoolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("asset_pool"), mint.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .initializeAssetPool()
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        mint,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
+    const pageIndex = Math.floor(tick / PAGE_SIZE);
+
+    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("tick_page"),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .initializeTickPage(pageIndex)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        tickPage: tickPagePda,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
+    const tx = await program.methods
+      .mockDepositToTick(tick, amount)
+      .accounts({
+        tickPage: tickPagePda,
+        assetPool: assetPoolPda,
+      })
+      .rpc();
+    console.log("tx:", tx);
+
+    const page = await program.account.tickPage.fetch(tickPagePda);
+    const index = tick % PAGE_SIZE;
+
+    if (page.ticks[index].availableLiquidity.toNumber() !== 1000) {
+      throw new Error("Wrong liquidity");
+    }
+
+    if (page.ticks[index].totalShares.toNumber() !== 1000) {
+      throw new Error("Wrong shares");
+    }
+
+    if (page.nonEmptyBitmap.toNumber() === 0) {
+      throw new Error("Bitmap not updated");
+    }
+  });
+
 });
