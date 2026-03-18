@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use crate::state::*;
 
 
-pub fn handler_initialize_tick_page(
+pub fn handle_initialize_tick_page(
     ctx: Context<InitializeTickPage>,
     page_index: u32,
 ) -> Result<()> {

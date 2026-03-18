@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use crate::MoonoError;
 use crate::state::*;
 
-pub fn handler_set_asset_pool_flags(
+pub fn handle_set_asset_pool_flags(
     ctx: Context<SetAssetPoolFlags>,
     is_enabled: bool,
     allow_deposits: bool,

@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 use crate::state::ProtocolConfig;
 
-pub fn handler_initialize_protocol(ctx: Context<InitializeProtocol>) -> Result<()> {
+pub fn handle_initialize_protocol(ctx: Context<InitializeProtocol>) -> Result<()> {
     let protocol = &mut ctx.accounts.protocol;
 
     protocol.version = 1;

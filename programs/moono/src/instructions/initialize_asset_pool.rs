@@ -4,7 +4,7 @@ use anchor_spl::token::Mint;
 use crate::MoonoError;
 use crate::state::*;
 
-pub fn handler_initialize_asset_pool(ctx: Context<InitializeAssetPool>) -> Result<()> {
+pub fn handle_initialize_asset_pool(ctx: Context<InitializeAssetPool>) -> Result<()> {
     let asset_pool = &mut ctx.accounts.asset_pool;
     let protocol = &ctx.accounts.protocol;
 

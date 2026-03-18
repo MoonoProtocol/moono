@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use crate::state::*;
 use crate::utils::*;
 
-pub fn handler_mock_deposit_to_tick(
+pub fn handle_mock_deposit_to_tick(
     ctx: Context<MockDepositToTick>,
     tick: u32,
     amount: u64,
