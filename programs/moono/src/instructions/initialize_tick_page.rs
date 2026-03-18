@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
 
+use crate::MoonoError;
 use crate::state::*;
 
 
@@ -7,7 +8,13 @@ pub fn handle_initialize_tick_page(
     ctx: Context<InitializeTickPage>,
     page_index: u32,
 ) -> Result<()> {
+    let protocol = &mut ctx.accounts.protocol;
     let tick_page = &mut ctx.accounts.tick_page;
+
+    require!(
+        protocol.authority == ctx.accounts.authority.key(),
+        MoonoError::Unauthorized
+    );
 
     tick_page.bump = ctx.bumps.tick_page;
     tick_page.asset_pool = ctx.accounts.asset_pool.key();
