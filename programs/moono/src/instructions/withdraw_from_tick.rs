@@ -26,7 +26,11 @@ pub fn handle_withdraw_from_tick(
     );
 
     let mut tick_page = ctx.accounts.tick_page.load_mut()?;
-    let (_page, index) = tick_to_page_index(tick);
+    let (page, index) = tick_to_page_index(tick);
+    require!(
+        tick_page.asset_pool == asset_pool.key() && tick_page.page_index == page,
+        MoonoError::WrongTickPage
+    );
     let tick_state = &mut tick_page.ticks[index];
 
     let lp_position = &mut ctx.accounts.lp_position;

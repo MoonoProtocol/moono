@@ -415,6 +415,132 @@ describe("moono", () => {
     }
   });
 
+  it("deposit_to_tick_rejects_wrong_tick_page", async () => {
+    const tick = 40;
+    const amount = new anchor.BN(1_000);
+
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const mint = await createMint(
+      provider.connection,
+      wallet.payer,
+      provider.wallet.publicKey,
+      null,
+      6
+    );
+
+    const userAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      mint,
+      userAta.address,
+      provider.wallet.publicKey,
+      10_000
+    );
+
+    const [assetPoolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("asset_pool"), mint.toBuffer()],
+      program.programId
+    );
+
+    const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault_authority"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    const tx = await program.methods
+      .initializeAssetPool()
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        mint,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        authority: provider.wallet.publicKey,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+    console.log("tx:", tx);
+
+    const wrongPageIndex = 0;
+
+    const [wrongTickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("tick_page"),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(wrongPageIndex).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .initializeTickPage(wrongPageIndex)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        tickPage: wrongTickPagePda,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("lp_position"),
+        provider.wallet.publicKey.toBuffer(),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    try {
+      await program.methods
+        .depositToTick(tick, amount)
+        .accounts({
+          assetPool: assetPoolPda,
+          owner: provider.wallet.publicKey,
+          mint,
+          userTokenAccount: userAta.address,
+          vault: vaultPda,
+          tickPage: wrongTickPagePda,
+          lpPosition: lpPositionPda,
+          tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([wallet.payer])
+        .rpc();
+
+      throw new Error("Expected deposit to fail with WrongTickPage");
+    } catch (error: any) {
+      const errorCode = error?.error?.errorCode?.code ?? "";
+      const errorMessage = String(error?.message ?? "");
+
+      if (
+        errorCode !== "WrongTickPage" &&
+        !errorMessage.includes("Wrong tick page")
+      ) {
+        throw error;
+      }
+    }
+  });
+
   it("withdraw_from_tick_transfers_tokens_back_to_user", async () => {
     const tick = 10;
     const depositAmount = new anchor.BN(1_000);

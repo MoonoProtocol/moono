@@ -37,4 +37,7 @@ pub enum MoonoError {
 
     #[msg("Wrong vault")]
     WrongVault,
+
+    #[msg("Wrong tick page")]
+    WrongTickPage,
 }
