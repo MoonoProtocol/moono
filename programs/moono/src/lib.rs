@@ -62,4 +62,24 @@ pub mod moono {
             amount
         )
     }
+
+    pub fn deposit_to_tick(
+        ctx: Context<DepositToTick>,
+        tick: u32,
+        amount: u64,
+    ) -> Result<()> {
+        instructions::deposit_to_tick::handle_deposit_to_tick(ctx, tick, amount)
+    }
+
+    pub fn withdraw_from_tick(
+        ctx: Context<WithdrawFromTick>,
+        tick: u32,
+        shares_to_burn: u64,
+    ) -> Result<()> {
+        instructions::withdraw_from_tick::handle_withdraw_from_tick(
+            ctx,
+            tick,
+            shares_to_burn,
+        )
+    }
 }

@@ -1,7 +1,12 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { createMint } from "@solana/spl-token";
 import { Moono } from "../target/types/moono";
+import {
+  createMint,
+  getOrCreateAssociatedTokenAccount,
+  mintTo,
+  getAccount,
+} from "@solana/spl-token";
 
 describe("moono", () => {
   const provider = anchor.AnchorProvider.env();
@@ -303,6 +308,287 @@ describe("moono", () => {
 
     if (page.nonEmptyBitmap.toNumber() === 0) {
       throw new Error("Bitmap not updated");
+    }
+  });
+
+
+  it("deposit_to_tick_transfers_tokens_into_vault", async () => {
+    console.log("provider wallet pubkey:", provider.wallet.publicKey.toBase58());
+    console.log("wallet.payer pubkey:", wallet.payer.publicKey.toBase58());
+
+    const tick = 10;
+    const amount = new anchor.BN(1_000);
+
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const mint = await createMint(
+      provider.connection,
+      wallet.payer,
+      provider.wallet.publicKey,
+      null,
+      6
+    );
+
+    const userAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      mint,
+      provider.wallet.publicKey
+    );
+
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      mint,
+      userAta.address,
+      provider.wallet.publicKey,
+      10_000
+    );
+
+    const [assetPoolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("asset_pool"), mint.toBuffer()],
+      program.programId
+    );
+
+    const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault_authority"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .initializeAssetPool()
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        mint,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        authority: provider.wallet.publicKey,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const pageIndex = Math.floor(tick / PAGE_SIZE);
+
+    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("tick_page"),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .initializeTickPage(pageIndex)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        tickPage: tickPagePda,
+        authority: provider.wallet.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("lp_position"),
+        provider.wallet.publicKey.toBuffer(),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    const tx = await program.methods
+      .depositToTick(tick, amount)
+      .accounts({
+        assetPool: assetPoolPda,
+        owner: provider.wallet.publicKey,
+        mint,
+        userTokenAccount: userAta.address,
+        vault: vaultPda,
+        tickPage: tickPagePda,
+        lpPosition: lpPositionPda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+    console.log("tx:", tx);
+
+    const lpPosition = await program.account.lpPosition.fetch(lpPositionPda);
+    if (lpPosition.shares.toNumber() !== 1000) {
+      throw new Error("LP shares mismatch");
+    }
+
+    const vaultAccount = await getAccount(provider.connection, vaultPda);
+    if (Number(vaultAccount.amount) !== 1000) {
+      throw new Error("Vault balance mismatch");
+    }
+  });
+
+  it("withdraw_from_tick_transfers_tokens_back_to_user", async () => {
+    const tick = 10;
+    const depositAmount = new anchor.BN(1_000);
+    const burnShares = new anchor.BN(400);
+
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const mint = await createMint(
+      provider.connection,
+      wallet.payer,
+      wallet.payer.publicKey,
+      null,
+      6
+    );
+
+    const userAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      mint,
+      wallet.payer.publicKey
+    );
+
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      mint,
+      userAta.address,
+      wallet.payer.publicKey,
+      10_000
+    );
+
+    const [assetPoolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("asset_pool"), mint.toBuffer()],
+      program.programId
+    );
+
+    const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault_authority"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .initializeAssetPool()
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        mint,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        authority: wallet.payer.publicKey,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const pageIndex = Math.floor(tick / PAGE_SIZE);
+
+    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("tick_page"),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .initializeTickPage(pageIndex)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        tickPage: tickPagePda,
+        authority: wallet.payer.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("lp_position"),
+        wallet.payer.publicKey.toBuffer(),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .depositToTick(tick, depositAmount)
+      .accounts({
+        assetPool: assetPoolPda,
+        owner: wallet.payer.publicKey,
+        mint,
+        userTokenAccount: userAta.address,
+        vault: vaultPda,
+        tickPage: tickPagePda,
+        lpPosition: lpPositionPda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const userBalanceBefore = Number(
+      (await getAccount(provider.connection, userAta.address)).amount
+    );
+
+    const tx = await program.methods
+      .withdrawFromTick(tick, burnShares)
+      .accounts({
+        assetPool: assetPoolPda,
+        owner: wallet.payer.publicKey,
+        mint,
+        userTokenAccount: userAta.address,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        tickPage: tickPagePda,
+        lpPosition: lpPositionPda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+      })
+      .signers([wallet.payer])
+      .rpc();
+    console.log("tx:", tx);
+
+    const userBalanceAfter = Number(
+      (await getAccount(provider.connection, userAta.address)).amount
+    );
+
+    const vaultBalanceAfter = Number(
+      (await getAccount(provider.connection, vaultPda)).amount
+    );
+
+    const lpPosition = await program.account.lpPosition.fetch(lpPositionPda);
+
+    if (userBalanceAfter - userBalanceBefore !== 400) {
+      throw new Error("User did not receive withdrawn tokens");
+    }
+
+    if (vaultBalanceAfter !== 600) {
+      throw new Error("Vault balance mismatch after withdraw");
+    }
+
+    if (lpPosition.shares.toNumber() !== 600) {
+      throw new Error("LP shares mismatch after withdraw");
     }
   });
 

@@ -24,6 +24,7 @@ pub struct AssetPool {
     pub bump: u8,
     pub protocol: Pubkey,
     pub mint: Pubkey,
+    pub vault: Pubkey,
     pub is_enabled: bool,
     pub allow_deposits: bool,
     pub allow_borrows: bool,
@@ -48,4 +49,13 @@ pub struct TickPage {
     pub bump: u8,
     pub _padding: [u8; 3],
     pub ticks: [TickState; PAGE_SIZE],
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct LpPosition {
+    pub owner: Pubkey,
+    pub asset_pool: Pubkey,
+    pub tick: u32,
+    pub shares: u64,
 }
