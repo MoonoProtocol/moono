@@ -5,6 +5,8 @@ pub mod set_asset_pool_flags;
 pub mod initialize_tick_page;
 pub mod deposit_to_tick;
 pub mod withdraw_from_tick;
+pub mod initialize_execution_strategy_config;
+pub mod set_execution_strategy_config;
 
 pub use initialize_protocol::*;
 pub use set_protocol_paused::*;
@@ -13,3 +15,5 @@ pub use set_asset_pool_flags::*;
 pub use initialize_tick_page::*;
 pub use deposit_to_tick::*;
 pub use withdraw_from_tick::*;
+pub use initialize_execution_strategy_config::*;
+pub use set_execution_strategy_config::*;

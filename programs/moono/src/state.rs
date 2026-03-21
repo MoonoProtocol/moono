@@ -96,6 +96,9 @@ pub struct ExecutionStrategyConfig {
     pub extra_quote_collateral_bps: u16,
     pub max_quote_loss_bps: u16,
 
+    pub min_quote_buffer_amount: u64,
+    pub fixed_migration_cost_quote: u64,
+
     pub reserved: [u8; 32],
 }
 
@@ -125,8 +128,11 @@ pub struct LoanPosition {
     pub extra_quote_collateral_bps_snapshot: u16,
     pub max_quote_loss_bps_snapshot: u16,
 
+    pub min_quote_buffer_amount_snapshot: u64,
+    pub fixed_migration_cost_quote_snapshot: u64,
+
     pub created_at: i64,
 
-    pub reserved: [u8; 32],
+    pub reserved: [u8; 16],
 }
 

@@ -819,4 +819,143 @@ describe("moono", () => {
       .signers([wallet.payer])
       .rpc();
   });
+
+  it("initialize_execution_strategy_config", async () => {
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const mode = 1; // pump.fun
+    const extraQuoteCollateralBps = 1000; // 10%
+    const maxQuoteLossBps = 1500; // 15%
+    const minQuoteBufferAmount = new anchor.BN(5_000_000_000); // 5 WSOL
+    const fixedMigrationCostQuote = new anchor.BN(500_000_000); // 0.5 WSOL
+
+    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("strategy_config"), Buffer.from([mode])],
+      program.programId
+    );
+
+    const tx = await program.methods
+      .initializeExecutionStrategyConfig(
+        mode,
+        extraQuoteCollateralBps,
+        maxQuoteLossBps,
+        minQuoteBufferAmount,
+        fixedMigrationCostQuote
+      )
+      .accounts({
+        protocol: protocolPda,
+        strategyConfig: strategyConfigPda,
+        authority: wallet.payer.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+    console.log("tx:", tx);
+
+    const strategyConfig =
+      await program.account.executionStrategyConfig.fetch(strategyConfigPda);
+
+    if (strategyConfig.mode !== mode) {
+      throw new Error("Mode mismatch");
+    }
+
+    if (strategyConfig.isEnabled !== true) {
+      throw new Error("Strategy config should be enabled");
+    }
+
+    if (
+      strategyConfig.extraQuoteCollateralBps !== extraQuoteCollateralBps
+    ) {
+      throw new Error("extraQuoteCollateralBps mismatch");
+    }
+
+    if (strategyConfig.maxQuoteLossBps !== maxQuoteLossBps) {
+      throw new Error("maxQuoteLossBps mismatch");
+    }
+
+    if (
+      strategyConfig.minQuoteBufferAmount.toString() !==
+      minQuoteBufferAmount.toString()
+    ) {
+      throw new Error("minQuoteBufferAmount mismatch");
+    }
+
+    if (
+      strategyConfig.fixedMigrationCostQuote.toString() !==
+      fixedMigrationCostQuote.toString()
+    ) {
+      throw new Error("fixedMigrationCostQuote mismatch");
+    }
+  });
+
+  it("set_execution_strategy_config", async () => {
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const mode = 1;
+
+    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("strategy_config"), Buffer.from([mode])],
+      program.programId
+    );
+
+    await program.methods
+      .initializeExecutionStrategyConfig(
+        mode,
+        1000,
+        1500,
+        new anchor.BN(5_000_000_000),
+        new anchor.BN(500_000_000)
+      )
+      .accounts({
+        protocol: protocolPda,
+        strategyConfig: strategyConfigPda,
+        authority: wallet.payer.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const tx = await program.methods
+      .setExecutionStrategyConfig(
+        false,
+        1200,
+        1700,
+        new anchor.BN(7_000_000_000),
+        new anchor.BN(750_000_000)
+      )
+      .accounts({
+        protocol: protocolPda,
+        strategyConfig: strategyConfigPda,
+        authority: wallet.payer.publicKey,
+      })
+      .signers([wallet.payer])
+      .rpc();
+    console.log("tx:", tx);
+
+
+    const strategyConfig =
+      await program.account.executionStrategyConfig.fetch(strategyConfigPda);
+
+    if (strategyConfig.isEnabled !== false) {
+      throw new Error("isEnabled mismatch");
+    }
+
+    if (strategyConfig.extraQuoteCollateralBps !== 1200) {
+      throw new Error("extraQuoteCollateralBps mismatch");
+    }
+
+    if (strategyConfig.maxQuoteLossBps !== 1700) {
+      throw new Error("maxQuoteLossBps mismatch");
+    }
+
+    if (strategyConfig.minQuoteBufferAmount.toString() !== "7000000000") {
+      throw new Error("minQuoteBufferAmount mismatch");
+    }
+
+    if (strategyConfig.fixedMigrationCostQuote.toString() !== "750000000") {
+      throw new Error("fixedMigrationCostQuote mismatch");
+    }
+  });
 });

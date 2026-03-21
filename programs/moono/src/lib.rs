@@ -73,4 +73,40 @@ pub mod moono {
     ) -> Result<()> {
         instructions::set_protocol_paused::handle_set_protocol_paused(ctx, paused)
     }
+
+    pub fn initialize_execution_strategy_config(
+        ctx: Context<InitializeExecutionStrategyConfig>,
+        mode: u8,
+        extra_quote_collateral_bps: u16,
+        max_quote_loss_bps: u16,
+        min_quote_buffer_amount: u64,
+        fixed_migration_cost_quote: u64,
+    ) -> Result<()> {
+        instructions::initialize_execution_strategy_config::handle_initialize_execution_strategy_config(
+            ctx,
+            mode,
+            extra_quote_collateral_bps,
+            max_quote_loss_bps,
+            min_quote_buffer_amount,
+            fixed_migration_cost_quote,
+        )
+    }
+
+    pub fn set_execution_strategy_config(
+        ctx: Context<SetExecutionStrategyConfig>,
+        is_enabled: bool,
+        extra_quote_collateral_bps: u16,
+        max_quote_loss_bps: u16,
+        min_quote_buffer_amount: u64,
+        fixed_migration_cost_quote: u64,
+    ) -> Result<()> {
+        instructions::set_execution_strategy_config::handle_set_execution_strategy_config(
+            ctx,
+            is_enabled,
+            extra_quote_collateral_bps,
+            max_quote_loss_bps,
+            min_quote_buffer_amount,
+            fixed_migration_cost_quote,
+        )
+    }
 }
