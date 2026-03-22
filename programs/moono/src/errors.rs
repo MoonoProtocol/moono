@@ -43,4 +43,13 @@ pub enum MoonoError {
 
     #[msg("Protocol is paused")]
     ProtocolPaused,
+
+    #[msg("Borrows are disabled for this asset pool")]
+    BorrowsDisabled,
+
+    #[msg("Execution strategy is disabled")]
+    StrategyDisabled,
+
+    #[msg("Invalid strategy config")]
+    InvalidStrategyConfig,
 }

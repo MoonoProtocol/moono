@@ -18,5 +18,6 @@ export ANCHOR_WALLET=$PWD/keys/deployer.json
 ./scripts/test.sh deposit_to_tick_fails_when_protocol_is_paused
 ./scripts/test.sh initialize_execution_strategy_config
 ./scripts/test.sh set_execution_strategy_config
+./scripts/test.sh open_loan_transfers_quote_buffer_into_loan_vault
 
 ```

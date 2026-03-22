@@ -109,4 +109,12 @@ pub mod moono {
             fixed_migration_cost_quote,
         )
     }
+
+    pub fn open_loan(
+        ctx: Context<OpenLoan>,
+        loan_id: u64,
+        quote_borrowed_amount: u64,
+    ) -> Result<()> {
+        instructions::open_loan::handle_open_loan(ctx, loan_id, quote_borrowed_amount)
+    }
 }

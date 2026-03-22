@@ -958,4 +958,150 @@ describe("moono", () => {
       throw new Error("fixedMigrationCostQuote mismatch");
     }
   });
+
+  it("open_loan_transfers_quote_buffer_into_loan_vault", async () => {
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const mint = await createMint(
+      provider.connection,
+      wallet.payer,
+      wallet.payer.publicKey,
+      null,
+      9
+    );
+
+    const userAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      mint,
+      wallet.payer.publicKey
+    );
+
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      mint,
+      userAta.address,
+      wallet.payer.publicKey,
+      20_000_000_000 // 20 WSOL-ish units with 9 decimals
+    );
+
+    const [assetPoolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("asset_pool"), mint.toBuffer()],
+      program.programId
+    );
+
+    const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault_authority"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .initializeAssetPool()
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        mint,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        authority: wallet.payer.publicKey,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const mode = 1;
+    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("strategy_config"), Buffer.from([mode])],
+      program.programId
+    );
+
+    await program.methods
+      .initializeExecutionStrategyConfig(
+        mode,
+        1000, // 10%
+        1500,
+        new anchor.BN(5_000_000_000), // min buffer = 5
+        new anchor.BN(500_000_000) // fixed = 0.5
+      )
+      .accounts({
+        protocol: protocolPda,
+        strategyConfig: strategyConfigPda,
+        authority: wallet.payer.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const loanId = new anchor.BN(1);
+    const quoteBorrowedAmount = new anchor.BN(10_000_000_000); // 10
+
+    const [loanPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("loan_position"),
+        wallet.payer.publicKey.toBuffer(),
+        loanId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    const [loanVaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_vault_authority"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+
+    const [loanQuoteBufferVaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_quote_buffer_vault"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .openLoan(loanId, quoteBorrowedAmount)
+      .accounts({
+        protocol: protocolPda,
+        quoteAssetPool: assetPoolPda,
+        strategyConfig: strategyConfigPda,
+        owner: wallet.payer.publicKey,
+        quoteMint: mint,
+        userQuoteTokenAccount: userAta.address,
+        loanPosition: loanPositionPda,
+        loanVaultAuthority: loanVaultAuthorityPda,
+        loanQuoteBufferVault: loanQuoteBufferVaultPda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const loan = await program.account.loanPosition.fetch(loanPositionPda);
+    const bufferVault = await getAccount(provider.connection, loanQuoteBufferVaultPda);
+
+    // buffer = max(10 * 10%, 5) + 0.5 = 5.5
+    if (loan.quoteBufferAmount.toString() !== "5500000000") {
+      throw new Error("quoteBufferAmount mismatch");
+    }
+
+    if (bufferVault.amount.toString() !== "5500000000") {
+      throw new Error("loan quote buffer vault balance mismatch");
+    }
+
+    if (!loan.quoteAssetPool.equals(assetPoolPda)) {
+      throw new Error("quoteAssetPool mismatch");
+    }
+
+    if (!loan.strategyConfig.equals(strategyConfigPda)) {
+      throw new Error("strategyConfig mismatch");
+    }
+
+    if (loan.quoteBorrowedAmount.toString() !== "10000000000") {
+      throw new Error("quoteBorrowedAmount mismatch");
+    }
+  });
 });
