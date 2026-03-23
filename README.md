@@ -19,5 +19,6 @@ export ANCHOR_WALLET=$PWD/keys/deployer.json
 ./scripts/test.sh initialize_execution_strategy_config
 ./scripts/test.sh set_execution_strategy_config
 ./scripts/test.sh open_loan_transfers_quote_buffer_into_loan_vault
+./scripts/test.sh borrow_from_ticks_transfers_quote_to_user_and_creates_debt
 
 ```

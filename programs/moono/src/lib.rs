@@ -117,4 +117,23 @@ pub mod moono {
     ) -> Result<()> {
         instructions::open_loan::handle_open_loan(ctx, loan_id, quote_borrowed_amount)
     }
+
+    pub fn initialize_borrow_position(
+        ctx: Context<InitializeBorrowPosition>,
+        loan_id: u64,
+        tick: u32,
+    ) -> Result<()> {
+        instructions::initialize_borrow_position::handle_initialize_borrow_position(
+            ctx,
+            loan_id,
+            tick,
+        )
+    }
+
+    pub fn borrow_from_ticks<'info>(
+        ctx: Context<'_, '_, 'info, 'info, BorrowFromTicks<'info>>,
+        fills: Vec<borrow_from_ticks::BorrowFill>,
+    ) -> Result<()> {
+        instructions::borrow_from_ticks::handle_borrow_from_ticks(ctx, fills)
+    }
 }

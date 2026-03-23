@@ -1104,4 +1104,259 @@ describe("moono", () => {
       throw new Error("quoteBorrowedAmount mismatch");
     }
   });
+
+  it("borrow_from_ticks_transfers_quote_to_user_and_creates_debt", async () => {
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const mint = await createMint(
+      provider.connection,
+      wallet.payer,
+      wallet.payer.publicKey,
+      null,
+      9
+    );
+
+    const userAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      mint,
+      wallet.payer.publicKey
+    );
+
+    await mintTo(
+      provider.connection,
+      wallet.payer,
+      mint,
+      userAta.address,
+      wallet.payer.publicKey,
+      30_000_000_000n
+    );
+
+    const [assetPoolPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("asset_pool"), mint.toBuffer()],
+      program.programId
+    );
+
+    const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault_authority"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    const [vaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("vault"), assetPoolPda.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .initializeAssetPool()
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        mint,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        authority: wallet.payer.publicKey,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const tick = 10;
+    const depositAmount = new anchor.BN(10_000_000_000);
+
+    const pageIndex = Math.floor(tick / PAGE_SIZE);
+    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("tick_page"),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .initializeTickPage(pageIndex)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        tickPage: tickPagePda,
+        authority: wallet.payer.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("lp_position"),
+        wallet.payer.publicKey.toBuffer(),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .depositToTick(tick, depositAmount)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        owner: wallet.payer.publicKey,
+        mint,
+        userTokenAccount: userAta.address,
+        vault: vaultPda,
+        tickPage: tickPagePda,
+        lpPosition: lpPositionPda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const mode = 1;
+    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("strategy_config"), Buffer.from([mode])],
+      program.programId
+    );
+
+    await program.methods
+      .initializeExecutionStrategyConfig(
+        mode,
+        1000,
+        1500,
+        new anchor.BN(1_000_000_000),
+        new anchor.BN(0)
+      )
+      .accounts({
+        protocol: protocolPda,
+        strategyConfig: strategyConfigPda,
+        authority: wallet.payer.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const loanId = new anchor.BN(1);
+    const quoteBorrowedAmount = new anchor.BN(2_000_000_000);
+
+    const [loanPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("loan_position"),
+        wallet.payer.publicKey.toBuffer(),
+        loanId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+
+    const [loanVaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_vault_authority"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+
+    const [loanQuoteBufferVaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_quote_buffer_vault"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+
+    await program.methods
+      .openLoan(loanId, quoteBorrowedAmount)
+      .accounts({
+        protocol: protocolPda,
+        quoteAssetPool: assetPoolPda,
+        strategyConfig: strategyConfigPda,
+        owner: wallet.payer.publicKey,
+        quoteMint: mint,
+        userQuoteTokenAccount: userAta.address,
+        loanPosition: loanPositionPda,
+        loanVaultAuthority: loanVaultAuthorityPda,
+        loanQuoteBufferVault: loanQuoteBufferVaultPda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const [borrowPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("borrow_position"),
+        loanPositionPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .initializeBorrowPosition(loanId, tick)
+      .accounts({
+        protocol: protocolPda,
+        quoteAssetPool: assetPoolPda,
+        loanPosition: loanPositionPda,
+        owner: wallet.payer.publicKey,
+        borrowPosition: borrowPositionPda,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const userBalanceBefore = Number(
+      (await getAccount(provider.connection, userAta.address)).amount
+    );
+
+    const tx = await program.methods
+      .borrowFromTicks([
+        {
+          tick,
+          amount: quoteBorrowedAmount,
+        },
+      ])
+      .accounts({
+        protocol: protocolPda,
+        quoteAssetPool: assetPoolPda,
+        owner: wallet.payer.publicKey,
+        quoteMint: mint,
+        userQuoteTokenAccount: userAta.address,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        loanPosition: loanPositionPda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+      })
+      .remainingAccounts([
+        { pubkey: tickPagePda, isSigner: false, isWritable: true },
+        { pubkey: borrowPositionPda, isSigner: false, isWritable: true },
+      ])
+      .signers([wallet.payer])
+      .rpc();
+    console.log("tx:", tx);
+
+    const userBalanceAfter = Number(
+      (await getAccount(provider.connection, userAta.address)).amount
+    );
+
+    const assetPoolVaultAfter = Number(
+      (await getAccount(provider.connection, vaultPda)).amount
+    );
+
+    const borrowPosition =
+      await program.account.borrowPosition.fetch(borrowPositionPda);
+
+    const loan = await program.account.loanPosition.fetch(loanPositionPda);
+
+    if (userBalanceAfter - userBalanceBefore !== 2_000_000_000) {
+      throw new Error("Borrowed amount was not transferred to user");
+    }
+
+    if (assetPoolVaultAfter !== 8_000_000_000) {
+      throw new Error("Asset pool vault balance mismatch after borrow");
+    }
+
+    if (borrowPosition.debtScaled.toString() !== "2000000000") {
+      throw new Error("BorrowPosition debtScaled mismatch for first borrow");
+    }
+
+    if (loan.status !== 3) {
+      throw new Error("Loan should be ACTIVE after borrow");
+    }
+  });
 });

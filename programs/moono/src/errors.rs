@@ -52,4 +52,31 @@ pub enum MoonoError {
 
     #[msg("Invalid strategy config")]
     InvalidStrategyConfig,
+
+    #[msg("Invalid loan position")]
+    InvalidLoanPosition,
+
+    #[msg("Invalid remaining accounts")]
+    InvalidRemainingAccounts,
+
+    #[msg("Invalid tick page")]
+    InvalidTickPage,
+
+    #[msg("Ticks must be sorted ascending")]
+    TicksNotSorted,
+
+    #[msg("Insufficient liquidity")]
+    InsufficientLiquidity,
+
+    #[msg("Borrow plan mismatch")]
+    BorrowPlanMismatch,
+
+    #[msg("Zero debt scaled added")]
+    ZeroDebtScaledAdded,
+
+    #[msg("Invalid loan status")]
+    InvalidLoanStatus,
+
+    #[msg("Invalid borrow position")]
+    InvalidBorrowPosition,
 }
