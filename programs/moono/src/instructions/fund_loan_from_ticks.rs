@@ -42,11 +42,13 @@ pub fn handle_fund_loan_from_ticks<'info>(
     let loan_quote_asset_pool = accounts.loan_position.quote_asset_pool;
     let loan_status = accounts.loan_position.status;
     let loan_position_key = accounts.loan_position.key();
-    let expected_funded_quote_amount = accounts.loan_position.funded_quote_amount;
+    let expected_planned_slice_count = accounts.loan_position.planned_slice_count;
+    let expected_funded_quote_amount =
+        accounts.loan_position.planned_total_principal_amount;
     let expected_total_upfront_interest_paid =
-        accounts.loan_position.total_upfront_interest_paid;
+        accounts.loan_position.planned_total_upfront_interest_amount;
     let expected_total_protocol_fee_paid =
-        accounts.loan_position.total_protocol_fee_paid;
+        accounts.loan_position.planned_total_protocol_fee_amount;
     let loan_quote_vault_key = accounts.loan_position.loan_quote_vault;
 
     let loan_quote_vault_account_key = accounts.loan_quote_vault.key();
@@ -75,6 +77,10 @@ pub fn handle_fund_loan_from_ticks<'info>(
     require!(
         accounts.loan_quote_vault.mint == quote_mint_key,
         MoonoError::WrongMint
+    );
+    require!(
+        fills.len() == expected_planned_slice_count as usize,
+        MoonoError::BorrowPlanSliceCountMismatch
     );
 
     let expected_remaining = fills

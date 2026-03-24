@@ -85,4 +85,7 @@ pub enum MoonoError {
 
     #[msg("Borrow plan protocol fee mismatch")]
     BorrowPlanProtocolFeeMismatch,
+
+    #[msg("Borrow plan slice count mismatch")]
+    BorrowPlanSliceCountMismatch,
 }
