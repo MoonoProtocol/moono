@@ -34,5 +34,6 @@ export ANCHOR_WALLET=$PWD/keys/deployer.json
 ./scripts/test.sh fund_loan_from_ticks_rejects_slice_count_mismatch
 ./scripts/test.sh fund_loan_from_ticks_rejects_principal_mismatch
 ./scripts/test.sh fund_loan_from_ticks_rejects_protocol_fee_mismatch
+./scripts/test.sh fund_loan_from_ticks_rejects_upfront_interest_mismatch
 
 ```
