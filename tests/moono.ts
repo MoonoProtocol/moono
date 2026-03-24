@@ -18,10 +18,21 @@ describe("moono", () => {
   };
 
   const PAGE_SIZE = 32;
+  let loanIdNonce = 0n;
+
+  function makeRoutePlanHash(label: string): number[] {
+    const bytes = Buffer.alloc(32);
+    Buffer.from(label).copy(bytes, 0, 0, Math.min(label.length, 32));
+    return Array.from(bytes);
+  }
+
+  function makeUniqueLoanId(): anchor.BN {
+    loanIdNonce += 1n;
+    return new anchor.BN(BigInt(Date.now()) + loanIdNonce);
+  }
 
 
   async function ensureProtocolInitialized() {
-    console.log("ensureProtocolInitialized called", program.programId);
     const [protocolPda] = anchor.web3.PublicKey.findProgramAddressSync(
       [Buffer.from("protocol")],
       program.programId
@@ -39,8 +50,6 @@ describe("moono", () => {
         })
         .rpc();
       return [protocolPda, tx];
-    } else {
-      console.log("Existiong Protocol:", existing);
     }
 
     const protocolAccount = await program.account.protocolConfig.fetch(protocolPda);
@@ -54,6 +63,98 @@ describe("moono", () => {
     }
 
     return [protocolPda, null];
+  }
+
+  async function ensureExecutionStrategyConfig(
+    protocolPda: anchor.web3.PublicKey,
+    mode: number,
+    isEnabled: boolean,
+    extraQuoteCollateralBps: number,
+    maxQuoteLossBps: number,
+    minQuoteBufferAmount: anchor.BN,
+    fixedMigrationCostQuote: anchor.BN
+  ) {
+    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("strategy_config"), Buffer.from([mode])],
+      program.programId
+    );
+
+    const existing = await provider.connection.getAccountInfo(strategyConfigPda);
+
+    if (!existing) {
+      const tx = await program.methods
+        .initializeExecutionStrategyConfig(
+          mode,
+          extraQuoteCollateralBps,
+          maxQuoteLossBps,
+          minQuoteBufferAmount,
+          fixedMigrationCostQuote
+        )
+        .accounts({
+          protocol: protocolPda,
+          strategyConfig: strategyConfigPda,
+          authority: wallet.payer.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([wallet.payer])
+        .rpc();
+
+      return { strategyConfigPda, tx };
+    } else {
+      const tx = await program.methods
+        .setExecutionStrategyConfig(
+          isEnabled,
+          extraQuoteCollateralBps,
+          maxQuoteLossBps,
+          minQuoteBufferAmount,
+          fixedMigrationCostQuote
+        )
+        .accounts({
+          protocol: protocolPda,
+          strategyConfig: strategyConfigPda,
+          authority: wallet.payer.publicKey,
+        })
+        .signers([wallet.payer])
+        .rpc();
+
+      return { strategyConfigPda, tx };
+    }
+  }
+
+  async function ensureTickPage(
+    protocolPda: anchor.web3.PublicKey,
+    assetPoolPda: anchor.web3.PublicKey,
+    pageIndex: number,
+    authority: anchor.web3.PublicKey
+  ) {
+    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("tick_page"),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    const existing = await provider.connection.getAccountInfo(tickPagePda);
+
+    if (!existing) {
+      const tx = await program.methods
+        .initializeTickPage(pageIndex)
+        .accounts({
+          protocol: protocolPda,
+          assetPool: assetPoolPda,
+          tickPage: tickPagePda,
+          authority,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        })
+        .signers([wallet.payer])
+        .rpc();
+
+      return { tickPagePda, tx };
+    }
+
+    return { tickPagePda, tx: null };
   }
 
   it("set_protocol_paused", async () => {
@@ -362,26 +463,24 @@ describe("moono", () => {
 
     const pageIndex = 0;
 
-    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("tick_page"),
-        assetPoolPda.toBuffer(),
-        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
-      ],
-      program.programId
+    const { tickPagePda, tx: ensureTickPageTx } = await ensureTickPage(
+      protocolPda,
+      assetPoolPda,
+      pageIndex,
+      wallet.payer.publicKey
     );
 
-    const tx = await program.methods
-      .initializeTickPage(pageIndex)
-      .accounts({
-        protocol: protocolPda,
-        assetPool: assetPoolPda,
-        tickPage: tickPagePda,
-        authority: wallet.payer.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
+    const tx =
+      ensureTickPageTx ??
+      (await program.methods
+        .setAssetPoolFlags(true, true, true)
+        .accounts({
+          protocol: protocolPda,
+          assetPool: assetPoolPda,
+          authority: wallet.payer.publicKey,
+        })
+        .signers([wallet.payer])
+        .rpc());
 
     console.log("tx:", tx);
 
@@ -473,26 +572,12 @@ describe("moono", () => {
 
     const pageIndex = Math.floor(tick / PAGE_SIZE);
 
-    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("tick_page"),
-        assetPoolPda.toBuffer(),
-        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
-      ],
-      program.programId
+    const { tickPagePda } = await ensureTickPage(
+      protocolPda,
+      assetPoolPda,
+      pageIndex,
+      provider.wallet.publicKey
     );
-
-    await program.methods
-      .initializeTickPage(pageIndex)
-      .accounts({
-        protocol: protocolPda,
-        assetPool: assetPoolPda,
-        tickPage: tickPagePda,
-        authority: provider.wallet.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
 
     const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
       [
@@ -622,17 +707,12 @@ describe("moono", () => {
       program.programId
     );
 
-    await program.methods
-      .initializeTickPage(wrongPageIndex)
-      .accounts({
-        protocol: protocolPda,
-        assetPool: assetPoolPda,
-        tickPage: wrongTickPagePda,
-        authority: provider.wallet.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
+    await ensureTickPage(
+      protocolPda,
+      assetPoolPda,
+      wrongPageIndex,
+      provider.wallet.publicKey
+    );
 
     const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
       [
@@ -853,26 +933,12 @@ describe("moono", () => {
 
     const pageIndex = Math.floor(tick / PAGE_SIZE);
 
-    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("tick_page"),
-        assetPoolPda.toBuffer(),
-        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
-      ],
-      program.programId
+    const { tickPagePda } = await ensureTickPage(
+      protocolPda,
+      assetPoolPda,
+      pageIndex,
+      wallet.payer.publicKey
     );
-
-    await program.methods
-      .initializeTickPage(pageIndex)
-      .accounts({
-        protocol: protocolPda,
-        assetPool: assetPoolPda,
-        tickPage: tickPagePda,
-        authority: wallet.payer.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
 
     const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
       [
@@ -958,27 +1024,15 @@ describe("moono", () => {
     const minQuoteBufferAmount = new anchor.BN(5_000_000_000); // 5 WSOL
     const fixedMigrationCostQuote = new anchor.BN(500_000_000); // 0.5 WSOL
 
-    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("strategy_config"), Buffer.from([mode])],
-      program.programId
+    const { strategyConfigPda, tx } = await ensureExecutionStrategyConfig(
+      protocolPda,
+      mode,
+      true,
+      extraQuoteCollateralBps,
+      maxQuoteLossBps,
+      minQuoteBufferAmount,
+      fixedMigrationCostQuote
     );
-
-    const tx = await program.methods
-      .initializeExecutionStrategyConfig(
-        mode,
-        extraQuoteCollateralBps,
-        maxQuoteLossBps,
-        minQuoteBufferAmount,
-        fixedMigrationCostQuote
-      )
-      .accounts({
-        protocol: protocolPda,
-        strategyConfig: strategyConfigPda,
-        authority: wallet.payer.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
 
     console.log("tx:", tx);
 
@@ -1023,28 +1077,15 @@ describe("moono", () => {
     const protocolPda = res[0];
 
     const mode = 1;
-
-    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("strategy_config"), Buffer.from([mode])],
-      program.programId
+    const { strategyConfigPda } = await ensureExecutionStrategyConfig(
+      protocolPda,
+      mode,
+      true,
+      1000,
+      1500,
+      new anchor.BN(5_000_000_000),
+      new anchor.BN(500_000_000)
     );
-
-    await program.methods
-      .initializeExecutionStrategyConfig(
-        mode,
-        1000,
-        1500,
-        new anchor.BN(5_000_000_000),
-        new anchor.BN(500_000_000)
-      )
-      .accounts({
-        protocol: protocolPda,
-        strategyConfig: strategyConfigPda,
-        authority: wallet.payer.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
 
     const tx = await program.methods
       .setExecutionStrategyConfig(
@@ -1162,32 +1203,23 @@ describe("moono", () => {
       .rpc();
 
     const mode = 1; // pump.fun
-    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("strategy_config"), Buffer.from([mode])],
-      program.programId
+    const { strategyConfigPda } = await ensureExecutionStrategyConfig(
+      protocolPda,
+      mode,
+      true,
+      1000,
+      1500,
+      new anchor.BN(5_000_000_000),
+      new anchor.BN(500_000_000)
     );
 
-    await program.methods
-      .initializeExecutionStrategyConfig(
-        mode,
-        1000, // 10%
-        1500, // max quote loss bps
-        new anchor.BN(5_000_000_000), // min quote buffer = 5
-        new anchor.BN(500_000_000) // fixed migration cost = 0.5
-      )
-      .accounts({
-        protocol: protocolPda,
-        strategyConfig: strategyConfigPda,
-        authority: wallet.payer.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
-
-    const loanId = new anchor.BN(1);
+    const loanId = makeUniqueLoanId();
+    const routePlanHash = makeRoutePlanHash("route-plan-open-loan");
+    const plannedSliceCount = 1;
 
     const requestedQuoteAmount = new anchor.BN(12_000_000_000); // 12
     const fundedQuoteAmount = new anchor.BN(10_000_000_000); // 10
+    const extraUserQuoteAmount = new anchor.BN(2_000_000_000); // 2
     const termSec = new anchor.BN(30 * 24 * 60 * 60); // 30 days
 
     const totalUpfrontInterestPaid = new anchor.BN(1_000_000_000); // 1
@@ -1229,8 +1261,11 @@ describe("moono", () => {
     const tx = await program.methods
       .openLoan(
         loanId,
+        routePlanHash,
+        plannedSliceCount,
         requestedQuoteAmount,
         fundedQuoteAmount,
+        extraUserQuoteAmount,
         termSec,
         totalUpfrontInterestPaid,
         totalProtocolFeePaid,
@@ -1298,12 +1333,53 @@ describe("moono", () => {
       throw new Error("Loan status should be OPENED");
     }
 
+    if (loan.routePlanHash.length !== 32) {
+      throw new Error("routePlanHash length mismatch");
+    }
+
+    if (Buffer.from(loan.routePlanHash).compare(Buffer.from(routePlanHash)) !== 0) {
+      throw new Error("routePlanHash mismatch");
+    }
+
+    if (loan.plannedSliceCount !== plannedSliceCount) {
+      throw new Error("plannedSliceCount mismatch");
+    }
+
     if (loan.requestedQuoteAmount.toString() !== "12000000000") {
       throw new Error("requestedQuoteAmount mismatch");
     }
 
     if (loan.fundedQuoteAmount.toString() !== "10000000000") {
       throw new Error("fundedQuoteAmount mismatch");
+    }
+
+    if (loan.extraUserQuoteAmount.toString() !== "2000000000") {
+      throw new Error("extraUserQuoteAmount mismatch");
+    }
+
+    if (loan.plannedTotalPrincipalAmount.toString() !== "10000000000") {
+      throw new Error("plannedTotalPrincipalAmount mismatch");
+    }
+
+    if (
+      loan.plannedTotalUpfrontInterestAmount.toString() !==
+      totalUpfrontInterestPaid.toString()
+    ) {
+      throw new Error("plannedTotalUpfrontInterestAmount mismatch");
+    }
+
+    if (
+      loan.plannedTotalProtocolFeeAmount.toString() !==
+      totalProtocolFeePaid.toString()
+    ) {
+      throw new Error("plannedTotalProtocolFeeAmount mismatch");
+    }
+
+    if (
+      loan.plannedTotalPlatformCostAmount.toString() !==
+      totalPlatformCostPaid.toString()
+    ) {
+      throw new Error("plannedTotalPlatformCostAmount mismatch");
     }
 
     if (loan.termSec.toString() !== termSec.toString()) {
@@ -1465,26 +1541,12 @@ describe("moono", () => {
     const depositAmount = new anchor.BN(10_000_000_000);
 
     const pageIndex = Math.floor(tick / PAGE_SIZE);
-    const [tickPagePda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("tick_page"),
-        assetPoolPda.toBuffer(),
-        new anchor.BN(pageIndex).toArrayLike(Buffer, "le", 4),
-      ],
-      program.programId
+    const { tickPagePda } = await ensureTickPage(
+      protocolPda,
+      assetPoolPda,
+      pageIndex,
+      wallet.payer.publicKey
     );
-
-    await program.methods
-      .initializeTickPage(pageIndex)
-      .accounts({
-        protocol: protocolPda,
-        assetPool: assetPoolPda,
-        tickPage: tickPagePda,
-        authority: wallet.payer.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
 
     const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
       [
@@ -1514,32 +1576,23 @@ describe("moono", () => {
       .rpc();
 
     const mode = 1;
-    const [strategyConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("strategy_config"), Buffer.from([mode])],
-      program.programId
+    const { strategyConfigPda } = await ensureExecutionStrategyConfig(
+      protocolPda,
+      mode,
+      true,
+      1000,
+      1500,
+      new anchor.BN(5_000_000_000),
+      new anchor.BN(500_000_000)
     );
 
-    await program.methods
-      .initializeExecutionStrategyConfig(
-        mode,
-        1000,
-        1500,
-        new anchor.BN(5_000_000_000),
-        new anchor.BN(500_000_000)
-      )
-      .accounts({
-        protocol: protocolPda,
-        strategyConfig: strategyConfigPda,
-        authority: wallet.payer.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      })
-      .signers([wallet.payer])
-      .rpc();
-
-    const loanId = new anchor.BN(1);
+    const loanId = makeUniqueLoanId();
+    const routePlanHash = makeRoutePlanHash("route-plan-fund-loan");
+    const plannedSliceCount = 1;
 
     const requestedQuoteAmount = new anchor.BN(12_000_000_000);
     const fundedQuoteAmount = new anchor.BN(10_000_000_000);
+    const extraUserQuoteAmount = new anchor.BN(2_000_000_000);
     const termSec = new anchor.BN(30 * 24 * 60 * 60);
 
     const totalUpfrontInterestPaid = new anchor.BN(1_000_000_000);
@@ -1573,8 +1626,11 @@ describe("moono", () => {
     await program.methods
       .openLoan(
         loanId,
+        routePlanHash,
+        plannedSliceCount,
         requestedQuoteAmount,
         fundedQuoteAmount,
+        extraUserQuoteAmount,
         termSec,
         totalUpfrontInterestPaid,
         totalProtocolFeePaid,

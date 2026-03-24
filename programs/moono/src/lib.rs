@@ -113,8 +113,11 @@ pub mod moono {
     pub fn open_loan(
         ctx: Context<OpenLoan>,
         loan_id: u64,
+        route_plan_hash: [u8; 32],
+        planned_slice_count: u16,
         requested_quote_amount: u64,
         funded_quote_amount: u64,
+        extra_user_quote_amount: u64,
         term_sec: u64,
         total_upfront_interest_paid: u64,
         total_protocol_fee_paid: u64,
@@ -123,8 +126,11 @@ pub mod moono {
         instructions::open_loan::handle_open_loan(
             ctx,
             loan_id,
+            route_plan_hash,
+            planned_slice_count,
             requested_quote_amount,
             funded_quote_amount,
+            extra_user_quote_amount,
             term_sec,
             total_upfront_interest_paid,
             total_protocol_fee_paid,

@@ -117,8 +117,18 @@ pub struct LoanPosition {
     pub strategy_mode: u8,
     pub status: u8,
 
+    pub route_plan_hash: [u8; 32],
+    pub planned_slice_count: u16,
+    pub _padding0: [u8; 6],
+
     pub requested_quote_amount: u64,
     pub funded_quote_amount: u64,
+    pub extra_user_quote_amount: u64,
+
+    pub planned_total_principal_amount: u64,
+    pub planned_total_upfront_interest_amount: u64,
+    pub planned_total_protocol_fee_amount: u64,
+    pub planned_total_platform_cost_amount: u64,
 
     pub term_sec: u64,
     pub created_at: i64,
@@ -147,5 +157,4 @@ pub struct LoanPosition {
 
     pub reserved: [u8; 32],
 }
-
 

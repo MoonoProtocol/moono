@@ -12,15 +12,23 @@ use crate::state::{
 pub fn handle_open_loan(
     ctx: Context<OpenLoan>,
     loan_id: u64,
+    route_plan_hash: [u8; 32],
+    planned_slice_count: u16,
     requested_quote_amount: u64,
     funded_quote_amount: u64,
+    extra_user_quote_amount: u64,
     term_sec: u64,
     total_upfront_interest_paid: u64,
     total_protocol_fee_paid: u64,
     total_platform_cost_paid: u64,
 ) -> Result<()> {
+    require!(planned_slice_count > 0, MoonoError::InvalidAmount);
     require!(requested_quote_amount > 0, MoonoError::InvalidAmount);
     require!(funded_quote_amount > 0, MoonoError::InvalidAmount);
+    require!(
+        funded_quote_amount <= requested_quote_amount,
+        MoonoError::InvalidAmount
+    );
     require!(term_sec > 0, MoonoError::InvalidAmount);
 
     let protocol = &ctx.accounts.protocol;
@@ -129,8 +137,18 @@ pub fn handle_open_loan(
     loan_position.strategy_mode = strategy_config.mode;
     loan_position.status = LOAN_STATUS_OPENED;
 
+    loan_position.route_plan_hash = route_plan_hash;
+    loan_position.planned_slice_count = planned_slice_count;
+    loan_position._padding0 = [0; 6];
+
     loan_position.requested_quote_amount = requested_quote_amount;
     loan_position.funded_quote_amount = funded_quote_amount;
+    loan_position.extra_user_quote_amount = extra_user_quote_amount;
+
+    loan_position.planned_total_principal_amount = funded_quote_amount;
+    loan_position.planned_total_upfront_interest_amount = total_upfront_interest_paid;
+    loan_position.planned_total_protocol_fee_amount = total_protocol_fee_paid;
+    loan_position.planned_total_platform_cost_amount = total_platform_cost_paid;
 
     loan_position.term_sec = term_sec;
     loan_position.created_at = now_ts;

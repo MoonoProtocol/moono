@@ -215,6 +215,8 @@ pub fn handle_fund_loan_from_ticks<'info>(
             .protocol_fee_paid
             .checked_add(fill.protocol_fee_amount)
             .ok_or(error!(MoonoError::MathOverflow))?;
+
+        borrow_slice.exit(&crate::ID)?;
     }
 
     require!(
