@@ -79,4 +79,10 @@ pub enum MoonoError {
 
     #[msg("Invalid borrow position")]
     InvalidBorrowPosition,
+
+    #[msg("Borrow plan interest mismatch")]
+    BorrowPlanInterestMismatch,
+
+    #[msg("Borrow plan protocol fee mismatch")]
+    BorrowPlanProtocolFeeMismatch,
 }

@@ -2,18 +2,17 @@ use anchor_lang::prelude::*;
 
 use crate::errors::MoonoError;
 use crate::state::{
-    AssetPool, BorrowPosition, LoanPosition, ProtocolConfig, LOAN_STATUS_INITIALIZED,
+    AssetPool, BorrowSlicePosition, LoanPosition, ProtocolConfig, LOAN_STATUS_OPENED,
 };
 
-pub fn handle_initialize_borrow_position(
-    ctx: Context<InitializeBorrowPosition>,
-    _loan_id: u64,
+pub fn handle_initialize_borrow_slice_position(
+    ctx: Context<InitializeBorrowSlicePosition>,
     tick: u32,
 ) -> Result<()> {
     let protocol = &ctx.accounts.protocol;
     let asset_pool = &ctx.accounts.quote_asset_pool;
     let loan_position = &ctx.accounts.loan_position;
-    let borrow_position = &mut ctx.accounts.borrow_position;
+    let borrow_slice_position = &mut ctx.accounts.borrow_slice_position;
 
     require!(!protocol.paused, MoonoError::ProtocolPaused);
     require!(
@@ -25,23 +24,25 @@ pub fn handle_initialize_borrow_position(
         MoonoError::InvalidLoanPosition
     );
     require!(
-        loan_position.status == LOAN_STATUS_INITIALIZED,
+        loan_position.status == LOAN_STATUS_OPENED,
         MoonoError::InvalidLoanStatus
     );
 
-    borrow_position.owner = ctx.accounts.owner.key();
-    borrow_position.loan_position = loan_position.key();
-    borrow_position.asset_pool = asset_pool.key();
-    borrow_position.tick = tick;
-    borrow_position.debt_scaled = 0;
+    borrow_slice_position.owner = ctx.accounts.owner.key();
+    borrow_slice_position.loan_position = loan_position.key();
+    borrow_slice_position.asset_pool = asset_pool.key();
+    borrow_slice_position.tick = tick;
+    borrow_slice_position.principal_outstanding = 0;
+    borrow_slice_position.upfront_interest_paid = 0;
+    borrow_slice_position.protocol_fee_paid = 0;
 
-    msg!("Borrow position initialized");
+    msg!("Borrow slice position initialized");
     Ok(())
 }
 
 #[derive(Accounts)]
 #[instruction(loan_id: u64, tick: u32)]
-pub struct InitializeBorrowPosition<'info> {
+pub struct InitializeBorrowSlicePosition<'info> {
     #[account(
         seeds = [b"protocol"],
         bump = protocol.bump
@@ -78,12 +79,9 @@ pub struct InitializeBorrowPosition<'info> {
             &tick.to_le_bytes()
         ],
         bump,
-        space = 8 + BorrowPosition::INIT_SPACE
+        space = 8 + BorrowSlicePosition::INIT_SPACE
     )]
-    pub borrow_position: Box<Account<'info, BorrowPosition>>,
+    pub borrow_slice_position: Box<Account<'info, BorrowSlicePosition>>,
 
     pub system_program: Program<'info, System>,
 }
-
-#[instruction(loan_id: u64, tick: u32)]
-pub struct _Phantom;

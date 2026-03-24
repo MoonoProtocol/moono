@@ -113,27 +113,41 @@ pub mod moono {
     pub fn open_loan(
         ctx: Context<OpenLoan>,
         loan_id: u64,
-        quote_borrowed_amount: u64,
+        requested_quote_amount: u64,
+        funded_quote_amount: u64,
+        term_sec: u64,
+        total_upfront_interest_paid: u64,
+        total_protocol_fee_paid: u64,
+        total_platform_cost_paid: u64,
     ) -> Result<()> {
-        instructions::open_loan::handle_open_loan(ctx, loan_id, quote_borrowed_amount)
+        instructions::open_loan::handle_open_loan(
+            ctx,
+            loan_id,
+            requested_quote_amount,
+            funded_quote_amount,
+            term_sec,
+            total_upfront_interest_paid,
+            total_protocol_fee_paid,
+            total_platform_cost_paid,
+        )
     }
 
-    pub fn initialize_borrow_position(
-        ctx: Context<InitializeBorrowPosition>,
+    pub fn initialize_borrow_slice_position(
+        ctx: Context<InitializeBorrowSlicePosition>,
         loan_id: u64,
         tick: u32,
     ) -> Result<()> {
-        instructions::initialize_borrow_position::handle_initialize_borrow_position(
+        let _ = loan_id;
+        instructions::initialize_borrow_slice_position::handle_initialize_borrow_slice_position(
             ctx,
-            loan_id,
             tick,
         )
     }
 
-    pub fn borrow_from_ticks<'info>(
-        ctx: Context<'_, '_, 'info, 'info, BorrowFromTicks<'info>>,
-        fills: Vec<borrow_from_ticks::BorrowFill>,
+    pub fn fund_loan_from_ticks<'info>(
+        ctx: Context<'_, '_, 'info, 'info, FundLoanFromTicks<'info>>,
+        fills: Vec<FundLoanFill>,
     ) -> Result<()> {
-        instructions::borrow_from_ticks::handle_borrow_from_ticks(ctx, fills)
+        instructions::fund_loan_from_ticks::handle_fund_loan_from_ticks(ctx, fills)
     }
 }

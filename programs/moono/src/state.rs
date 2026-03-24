@@ -2,7 +2,6 @@ use anchor_lang::prelude::*;
 
 pub const PAGE_SIZE: usize = 32;
 pub const PAGE_SIZE_U32: u32 = 32;
-pub const RAY: u128 = 1_000_000_000_000_000_000_000_000_000;
 
 pub const TICK_STATE_SIZE: usize = 64;
 pub const TICK_PAGE_HEADER_SIZE: usize = 48;
@@ -12,10 +11,10 @@ pub const MODE_PUMP_FUN: u8 = 1;
 pub const MODE_METEORA: u8 = 2;
 pub const MODE_PUMP_SWAP: u8 = 3;
 
-pub const LOAN_STATUS_INITIALIZED: u8 = 1;
-pub const LOAN_STATUS_EXECUTED: u8 = 2;
-pub const LOAN_STATUS_ACTIVE: u8 = 3;
-pub const LOAN_STATUS_REPAID: u8 = 4;
+pub const LOAN_STATUS_OPENED: u8 = 1;
+pub const LOAN_STATUS_FUNDED: u8 = 2;
+pub const LOAN_STATUS_EXECUTED: u8 = 3;
+pub const LOAN_STATUS_REDEEMED: u8 = 4;
 pub const LOAN_STATUS_CLOSED: u8 = 5;
 pub const LOAN_STATUS_LIQUIDATED: u8 = 6;
 
@@ -36,6 +35,7 @@ pub struct AssetPool {
     pub protocol: Pubkey,
     pub mint: Pubkey,
     pub vault: Pubkey,
+    pub quote_treasury_vault: Pubkey,
     pub is_enabled: bool,
     pub allow_deposits: bool,
     pub allow_borrows: bool,
@@ -45,12 +45,11 @@ pub struct AssetPool {
 #[zero_copy]
 #[repr(C)]
 pub struct TickState {
-    pub total_debt_scaled: u128,
-    pub borrow_index_ray: u128,
     pub total_shares: u64,
     pub available_liquidity: u64,
-    pub last_accrual_ts: i64,
-    pub _padding: [u8; 8],
+    pub outstanding_principal: u64,
+    pub realized_interest_collected: u64,
+    pub _padding: [u8; 32],
 }
 
 #[account(zero_copy)]
@@ -76,12 +75,14 @@ pub struct LpPosition {
 
 #[account]
 #[derive(InitSpace)]
-pub struct BorrowPosition {
+pub struct BorrowSlicePosition {
     pub owner: Pubkey,
     pub loan_position: Pubkey,
     pub asset_pool: Pubkey,
     pub tick: u32,
-    pub debt_scaled: u128,
+    pub principal_outstanding: u64,
+    pub upfront_interest_paid: u64,
+    pub protocol_fee_paid: u64,
 }
 
 #[account]
@@ -111,19 +112,32 @@ pub struct LoanPosition {
     pub owner: Pubkey,
 
     pub quote_asset_pool: Pubkey,
-    pub quote_borrowed_amount: u64,
+    pub strategy_config: Pubkey,
+
+    pub strategy_mode: u8,
+    pub status: u8,
+
+    pub requested_quote_amount: u64,
+    pub funded_quote_amount: u64,
+
+    pub term_sec: u64,
+    pub created_at: i64,
+    pub expires_at: i64,
+
+    pub total_upfront_interest_paid: u64,
+    pub total_protocol_fee_paid: u64,
+    pub total_platform_cost_paid: u64,
+
+    pub required_quote_buffer_amount: u64,
+
+    pub loan_quote_vault: Pubkey,
+    pub quote_buffer_vault: Pubkey,
 
     pub collateral_mint: Pubkey,
     pub collateral_vault: Pubkey,
     pub collateral_amount: u64,
 
-    pub quote_buffer_vault: Pubkey,
-    pub quote_buffer_amount: u64,
-
-    pub strategy_mode: u8,
-    pub status: u8,
-
-    pub strategy_config: Pubkey,
+    pub immediate_user_base_amount: u64,
 
     pub extra_quote_collateral_bps_snapshot: u16,
     pub max_quote_loss_bps_snapshot: u16,
@@ -131,8 +145,7 @@ pub struct LoanPosition {
     pub min_quote_buffer_amount_snapshot: u64,
     pub fixed_migration_cost_quote_snapshot: u64,
 
-    pub created_at: i64,
-
-    pub reserved: [u8; 16],
+    pub reserved: [u8; 32],
 }
+
 
