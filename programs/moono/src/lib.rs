@@ -156,4 +156,28 @@ pub mod moono {
     ) -> Result<()> {
         instructions::fund_loan_from_ticks::handle_fund_loan_from_ticks(ctx, fills)
     }
+
+    pub fn execute_launch_pump_fun(
+        ctx: Context<ExecuteLaunchPumpFun>,
+        use_create_v2: bool,
+        name: String,
+        symbol: String,
+        uri: String,
+        loan_quote_spend_amount: u64,
+        extra_user_quote_spend_amount: u64,
+        collateral_min_base_out: u64,
+        immediate_user_min_base_out: u64,
+    ) -> Result<()> {
+        instructions::execute_launch_pump_fun::handle_execute_launch_pump_fun(
+            ctx,
+            use_create_v2,
+            name,
+            symbol,
+            uri,
+            loan_quote_spend_amount,
+            extra_user_quote_spend_amount,
+            collateral_min_base_out,
+            immediate_user_min_base_out,
+        )
+    }
 }

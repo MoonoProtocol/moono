@@ -163,6 +163,11 @@ pub fn handle_open_loan(
     loan_position.loan_quote_vault = ctx.accounts.loan_quote_vault.key();
     loan_position.quote_buffer_vault = ctx.accounts.loan_quote_buffer_vault.key();
 
+    loan_position.executed_at = 0;
+    loan_position.executed_loan_quote_amount = 0;
+    loan_position.executed_extra_user_quote_amount = 0;
+    loan_position.executed_total_base_amount = 0;
+
     loan_position.collateral_mint = Pubkey::default();
     loan_position.collateral_vault = Pubkey::default();
     loan_position.collateral_amount = 0;

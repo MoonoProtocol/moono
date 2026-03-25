@@ -10,6 +10,7 @@ pub mod set_execution_strategy_config;
 pub mod open_loan;
 pub mod initialize_borrow_slice_position;
 pub mod fund_loan_from_ticks;
+pub mod execute_launch_pump_fun;
 
 pub use initialize_protocol::*;
 pub use set_protocol_paused::*;
@@ -23,3 +24,4 @@ pub use set_execution_strategy_config::*;
 pub use open_loan::*;
 pub use initialize_borrow_slice_position::*;
 pub use fund_loan_from_ticks::*;
+pub use execute_launch_pump_fun::*;

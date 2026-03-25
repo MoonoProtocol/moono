@@ -7,6 +7,7 @@ skip-lint = false
 
 [programs.localnet]
 moono = "moonoL26kRC8S49yPuuopKhbNhvgf2h4Dva91noD8rN"
+mock_pump_fun = "pump5khDuXvghyrSQATnojua6ydquBG5fN7FibwHF4e"
 
 [registry]
 url = "https://api.apr.dev"

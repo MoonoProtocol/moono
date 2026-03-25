@@ -88,4 +88,16 @@ pub enum MoonoError {
 
     #[msg("Borrow plan slice count mismatch")]
     BorrowPlanSliceCountMismatch,
+
+    #[msg("Wrong strategy mode")]
+    WrongStrategyMode,
+
+    #[msg("Extra user quote amount exceeded")]
+    ExtraUserQuoteAmountExceeded,
+
+    #[msg("Pump.fun requires WSOL quote mint")]
+    PumpFunRequiresWsolQuote,
+
+    #[msg("Invalid token account")]
+    InvalidTokenAccount,
 }

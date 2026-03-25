@@ -143,6 +143,11 @@ pub struct LoanPosition {
     pub loan_quote_vault: Pubkey,
     pub quote_buffer_vault: Pubkey,
 
+    pub executed_at: i64,
+    pub executed_loan_quote_amount: u64,
+    pub executed_extra_user_quote_amount: u64,
+    pub executed_total_base_amount: u64,
+
     pub collateral_mint: Pubkey,
     pub collateral_vault: Pubkey,
     pub collateral_amount: u64,
@@ -157,4 +162,3 @@ pub struct LoanPosition {
 
     pub reserved: [u8; 32],
 }
-

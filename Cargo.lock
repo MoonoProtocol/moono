@@ -943,12 +943,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock_pump_fun"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "spl-token",
+]
+
+[[package]]
 name = "moono"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
  "bytemuck",
+ "sha2 0.10.9",
+ "spl-associated-token-account",
+ "spl-token",
 ]
 
 [[package]]

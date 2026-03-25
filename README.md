@@ -1,7 +1,9 @@
 # Local
 
 ```
+mkdir -p $PWD/target/deploy
 cp $PWD/keys/moono.json $PWD/target/deploy/moono-keypair.json
+cp $PWD/keys/mock_pump_fun.json $PWD/target/deploy/mock_pump_fun-keypair.json
 
 solana-test-validator --reset
 
@@ -35,5 +37,10 @@ export ANCHOR_WALLET=$PWD/keys/deployer.json
 ./scripts/test.sh fund_loan_from_ticks_rejects_principal_mismatch
 ./scripts/test.sh fund_loan_from_ticks_rejects_protocol_fee_mismatch
 ./scripts/test.sh fund_loan_from_ticks_rejects_upfront_interest_mismatch
+
+# Pump.fun execution
+./scripts/test.sh execute_launch_pump_fun_moves_quote_and_splits_base_output
+./scripts/test.sh execute_launch_pump_fun_rejects_non_wsol_quote_pool
+./scripts/test.sh execute_launch_pump_fun_rejects_slippage_exceeded
 
 ```
