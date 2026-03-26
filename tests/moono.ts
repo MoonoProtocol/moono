@@ -110,17 +110,27 @@ describe("moono", () => {
     const sig = await provider.connection.sendTransaction(tx, {
       skipPreflight: false,
       preflightCommitment: "confirmed",
-      maxRetries: 5,
+      maxRetries: 20,
     });
-    await provider.connection.confirmTransaction(
-      {
-        signature: sig,
-        blockhash: latest.blockhash,
-        lastValidBlockHeight: latest.lastValidBlockHeight,
-      },
-      "confirmed"
-    );
-    return sig;
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 120_000) {
+      const { value } = await provider.connection.getSignatureStatuses([sig]);
+      const status = value[0];
+      if (status?.err) {
+        throw new Error(`Versioned tx failed: ${JSON.stringify(status.err)}`);
+      }
+      if (
+        status &&
+        (status.confirmationStatus === "confirmed" ||
+          status.confirmationStatus === "finalized")
+      ) {
+        return sig;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    throw new Error(`Versioned tx was not confirmed in time: ${sig}`);
   }
 
 
@@ -1643,6 +1653,7 @@ describe("moono", () => {
         totalPlatformCostPaid
       )
       .accounts({
+        selfProgram: program.programId,
         protocol: protocolPda,
         quoteAssetPool: assetPoolPda,
         strategyConfig: strategyConfigPda,
@@ -3455,7 +3466,7 @@ describe("moono", () => {
       (await getAccount(provider.connection, userQuoteAta.address)).amount
     );
 
-    const tx = await program.methods
+    const executeIx = await program.methods
       .executeLaunchPumpFun(
         true,
         tokenName,
@@ -3510,13 +3521,17 @@ describe("moono", () => {
         { pubkey: pumpFeeProgramId, isSigner: false, isWritable: false },
         { pubkey: mockPumpFunBondingCurveV2Pda, isSigner: false, isWritable: true },
       ])
-      .preInstructions([
+      .instruction();
+
+    const tx = await sendVersionedTxWithLookup(
+      [
         anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
           units: 400_000,
         }),
-      ])
-      .signers([wallet.payer, baseMint])
-      .rpc();
+        executeIx,
+      ],
+      [wallet.payer, baseMint]
+    );
 
     console.log("tx:", tx);
 
@@ -3613,6 +3628,363 @@ describe("moono", () => {
 
     if (userQuoteBefore - userQuoteAfter !== 2_000_000_000) {
       throw new Error("user extra quote spend mismatch");
+    }
+
+    if (Number(loanCollateralVault.amount) !== 1_000_000) {
+      throw new Error("loan collateral vault base amount mismatch");
+    }
+
+    if (Number(userBaseAccount.amount) !== 200_000) {
+      throw new Error("user base token amount mismatch");
+    }
+  });
+
+  it("open_fund_execute_launch_pump_fun_is_atomic", async () => {
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const quoteMint = NATIVE_MINT;
+    const userQuoteAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      quoteMint,
+      wallet.payer.publicKey
+    );
+
+    await provider.sendAndConfirm(
+      new anchor.web3.Transaction().add(
+        anchor.web3.SystemProgram.transfer({
+          fromPubkey: wallet.payer.publicKey,
+          toPubkey: userQuoteAta.address,
+          lamports: 60_000_000_000,
+        }),
+        createSyncNativeInstruction(userQuoteAta.address)
+      ),
+      [wallet.payer]
+    );
+
+    const {
+      assetPoolPda,
+      vaultAuthorityPda,
+      vaultPda,
+      protocolQuoteTreasuryAuthorityPda,
+      protocolQuoteTreasuryVaultPda,
+    } = await ensureAssetPool(protocolPda, quoteMint);
+
+    const tick = 14;
+    const depositAmount = new anchor.BN(20_000_000_000);
+    const pageIndex = Math.floor(tick / PAGE_SIZE);
+    const { tickPagePda } = await ensureTickPage(
+      protocolPda,
+      assetPoolPda,
+      pageIndex,
+      wallet.payer.publicKey
+    );
+
+    const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("lp_position"),
+        wallet.payer.publicKey.toBuffer(),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .depositToTick(tick, depositAmount)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        owner: wallet.payer.publicKey,
+        mint: quoteMint,
+        userTokenAccount: userQuoteAta.address,
+        vault: vaultPda,
+        lpPosition: lpPositionPda,
+        tickPage: tickPagePda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const mode = 1;
+    const { strategyConfigPda } = await ensureExecutionStrategyConfig(
+      protocolPda,
+      mode,
+      true,
+      1000,
+      1500,
+      new anchor.BN(5_000_000_000),
+      new anchor.BN(500_000_000)
+    );
+
+    const loanId = makeUniqueLoanId();
+    const routePlanHash = makeRoutePlanHash("route-plan-open-fund-execute-atomic");
+    const plannedSliceCount = 1;
+    const requestedQuoteAmount = new anchor.BN(12_000_000_000);
+    const fundedQuoteAmount = new anchor.BN(10_000_000_000);
+    const extraUserQuoteAmount = new anchor.BN(2_000_000_000);
+    const termSec = new anchor.BN(30 * 24 * 60 * 60);
+    const totalUpfrontInterestPaid = new anchor.BN(1_000_000_000);
+    const totalProtocolFeePaid = new anchor.BN(200_000_000);
+    const totalPlatformCostPaid = new anchor.BN(300_000_000);
+
+    const [loanPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("loan_position"),
+        wallet.payer.publicKey.toBuffer(),
+        loanId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+    const [loanVaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_vault_authority"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+    const [loanQuoteVaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_quote_vault"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+    const [loanQuoteBufferVaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_quote_buffer_vault"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+    const [borrowSlicePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("borrow_position"),
+        loanPositionPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    const baseMint = anchor.web3.Keypair.generate();
+    const [mockPumpFunGlobalParamsPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("global-params")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunSolVaultPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("sol-vault")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunMayhemStatePda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("mayhem-state"), baseMint.publicKey.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunGlobalPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("global")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunEventAuthorityPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("__event_authority")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunBondingCurvePda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("bonding-curve"), baseMint.publicKey.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunBondingCurveV2Pda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("bonding-curve-v2"), baseMint.publicKey.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const mockPumpFunAssociatedBondingCurvePda = getAssociatedTokenAddressSync(
+      baseMint.publicKey,
+      mockPumpFunBondingCurvePda,
+      true,
+      TOKEN_2022_PROGRAM_ID
+    );
+    const [mockPumpFunLoanTemporaryWsolVaultPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("temp_wsol_vault"), loanPositionPda.toBuffer(), Buffer.from("loan")],
+        program.programId
+      );
+    const [mockPumpFunMintAuthorityPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("mint-authority")],
+        mockPumpFunProgram.programId
+      );
+    const [loanExecutionWalletPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("loan_execution_wallet"), loanPositionPda.toBuffer()],
+        program.programId
+      );
+    const loanCollateralVaultPda = getAssociatedTokenAddressSync(
+      baseMint.publicKey,
+      loanExecutionWalletPda,
+      true,
+      TOKEN_2022_PROGRAM_ID
+    );
+    const userBaseAta = getAssociatedTokenAddressSync(
+      baseMint.publicKey,
+      wallet.payer.publicKey,
+      false,
+      TOKEN_2022_PROGRAM_ID
+    );
+    const [mockPumpFunGlobalVolumeAccumulatorPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("global_volume_accumulator")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunExecutionWalletVolumeAccumulatorPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("user_volume_accumulator"), loanExecutionWalletPda.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunOwnerVolumeAccumulatorPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("user_volume_accumulator"), wallet.payer.publicKey.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunFeeConfigPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("fee_config"), pumpFeeConfigAuthority],
+        pumpFeeProgramId
+      );
+
+    const ix = await program.methods
+      .openFundExecuteLaunchPumpFun(
+        loanId,
+        routePlanHash,
+        plannedSliceCount,
+        requestedQuoteAmount,
+        fundedQuoteAmount,
+        extraUserQuoteAmount,
+        termSec,
+        totalUpfrontInterestPaid,
+        totalProtocolFeePaid,
+        totalPlatformCostPaid,
+        [
+          {
+            tick,
+            principalAmount: fundedQuoteAmount,
+            upfrontInterestAmount: totalUpfrontInterestPaid,
+            protocolFeeAmount: totalProtocolFeePaid,
+          },
+        ],
+        true,
+        "Moono",
+        "MPT",
+        "https://mpt",
+        new anchor.BN(10_000_000_000),
+        new anchor.BN(2_000_000_000),
+        new anchor.BN(900_000),
+        new anchor.BN(150_000)
+      )
+      .accounts({
+        protocol: protocolPda,
+        quoteAssetPool: assetPoolPda,
+        strategyConfig: strategyConfigPda,
+        owner: wallet.payer.publicKey,
+        quoteMint: quoteMint,
+        userQuoteTokenAccount: userQuoteAta.address,
+        userExtraQuoteTokenAccount: userQuoteAta.address,
+        loanPosition: loanPositionPda,
+        loanVaultAuthority: loanVaultAuthorityPda,
+        loanQuoteVault: loanQuoteVaultPda,
+        loanQuoteBufferVault: loanQuoteBufferVaultPda,
+        protocolQuoteTreasuryAuthority: protocolQuoteTreasuryAuthorityPda,
+        protocolQuoteTreasuryVault: protocolQuoteTreasuryVaultPda,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        baseMint: baseMint.publicKey,
+        loanExecutionWallet: loanExecutionWalletPda,
+        pumpFunProgram: mockPumpFunProgram.programId,
+        pumpFunGlobal: mockPumpFunGlobalPda,
+        pumpFunBondingCurve: mockPumpFunBondingCurvePda,
+        pumpFunAssociatedBondingCurve: mockPumpFunAssociatedBondingCurvePda,
+        pumpFunLoanTemporaryWsolVault: mockPumpFunLoanTemporaryWsolVaultPda,
+        pumpFunMintAuthority: mockPumpFunMintAuthorityPda,
+        pumpFunEventAuthority: mockPumpFunEventAuthorityPda,
+        pumpFunFeeRecipient: wallet.payer.publicKey,
+        pumpFunCreatorVault: loanExecutionWalletPda,
+        pumpFunMayhemProgram: mockPumpFunProgram.programId,
+        pumpFunGlobalParams: mockPumpFunGlobalParamsPda,
+        pumpFunSolVault: mockPumpFunSolVaultPda,
+        pumpFunMayhemState: mockPumpFunMayhemStatePda,
+        pumpFunMayhemTokenVault: getAssociatedTokenAddressSync(
+          baseMint.publicKey,
+          mockPumpFunSolVaultPda,
+          true,
+          TOKEN_2022_PROGRAM_ID
+        ),
+        loanCollateralVault: loanCollateralVaultPda,
+        userBaseTokenAccount: userBaseAta,
+        quoteTokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        baseTokenProgram: TOKEN_2022_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .remainingAccounts([
+        { pubkey: tickPagePda, isSigner: false, isWritable: true },
+        { pubkey: borrowSlicePda, isSigner: false, isWritable: true },
+        { pubkey: mockPumpFunGlobalVolumeAccumulatorPda, isSigner: false, isWritable: false },
+        {
+          pubkey: mockPumpFunExecutionWalletVolumeAccumulatorPda,
+          isSigner: false,
+          isWritable: true,
+        },
+        { pubkey: mockPumpFunOwnerVolumeAccumulatorPda, isSigner: false, isWritable: true },
+        { pubkey: mockPumpFunFeeConfigPda, isSigner: false, isWritable: false },
+        { pubkey: pumpFeeProgramId, isSigner: false, isWritable: false },
+        { pubkey: mockPumpFunBondingCurveV2Pda, isSigner: false, isWritable: true },
+      ])
+      .instruction();
+
+    const tx = await sendVersionedTxWithLookup(
+      [
+        anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 1_000_000,
+        }),
+        anchor.web3.ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 1,
+        }),
+        ix,
+      ],
+      [wallet.payer, baseMint]
+    );
+
+    console.log("tx:", tx);
+
+    const loan = await program.account.loanPosition.fetch(loanPositionPda);
+    const loanCollateralVault = await getAccount(
+      provider.connection,
+      loanCollateralVaultPda,
+      undefined,
+      TOKEN_2022_PROGRAM_ID
+    );
+    const userBaseAccount = await getAccount(
+      provider.connection,
+      userBaseAta,
+      undefined,
+      TOKEN_2022_PROGRAM_ID
+    );
+
+    if (loan.status !== 3) {
+      throw new Error("Loan should be EXECUTED after atomic open_fund_execute_launch_pump_fun");
+    }
+
+    if (loan.executedLoanQuoteAmount.toString() !== "10000000000") {
+      throw new Error("executedLoanQuoteAmount mismatch");
+    }
+
+    if (loan.executedExtraUserQuoteAmount.toString() !== "2000000000") {
+      throw new Error("executedExtraUserQuoteAmount mismatch");
+    }
+
+    if (loan.collateralAmount.toString() !== "1000000") {
+      throw new Error("collateralAmount mismatch");
+    }
+
+    if (loan.immediateUserBaseAmount.toString() !== "200000") {
+      throw new Error("immediateUserBaseAmount mismatch");
     }
 
     if (Number(loanCollateralVault.amount) !== 1_000_000) {
@@ -4001,6 +4373,348 @@ describe("moono", () => {
     }
   });
 
+  it("open_fund_execute_launch_pump_fun_is_atomic_without_extra_buy", async () => {
+    const res = await ensureProtocolInitialized();
+    const protocolPda = res[0];
+
+    const quoteMint = NATIVE_MINT;
+    const userQuoteAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      wallet.payer,
+      quoteMint,
+      wallet.payer.publicKey
+    );
+
+    await provider.sendAndConfirm(
+      new anchor.web3.Transaction().add(
+        anchor.web3.SystemProgram.transfer({
+          fromPubkey: wallet.payer.publicKey,
+          toPubkey: userQuoteAta.address,
+          lamports: 60_000_000_000,
+        }),
+        createSyncNativeInstruction(userQuoteAta.address)
+      ),
+      [wallet.payer]
+    );
+
+    const {
+      assetPoolPda,
+      vaultAuthorityPda,
+      vaultPda,
+      protocolQuoteTreasuryAuthorityPda,
+      protocolQuoteTreasuryVaultPda,
+    } = await ensureAssetPool(protocolPda, quoteMint);
+
+    const tick = 16;
+    const depositAmount = new anchor.BN(20_000_000_000);
+    const pageIndex = Math.floor(tick / PAGE_SIZE);
+    const { tickPagePda } = await ensureTickPage(
+      protocolPda,
+      assetPoolPda,
+      pageIndex,
+      wallet.payer.publicKey
+    );
+
+    const [lpPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("lp_position"),
+        wallet.payer.publicKey.toBuffer(),
+        assetPoolPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    await program.methods
+      .depositToTick(tick, depositAmount)
+      .accounts({
+        protocol: protocolPda,
+        assetPool: assetPoolPda,
+        owner: wallet.payer.publicKey,
+        mint: quoteMint,
+        userTokenAccount: userQuoteAta.address,
+        vault: vaultPda,
+        lpPosition: lpPositionPda,
+        tickPage: tickPagePda,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .signers([wallet.payer])
+      .rpc();
+
+    const { strategyConfigPda } = await ensureExecutionStrategyConfig(
+      protocolPda,
+      1,
+      true,
+      1000,
+      1500,
+      new anchor.BN(5_000_000_000),
+      new anchor.BN(500_000_000)
+    );
+
+    const loanId = makeUniqueLoanId();
+    const routePlanHash = makeRoutePlanHash("route-plan-open-fund-execute-atomic-no-extra");
+    const requestedQuoteAmount = new anchor.BN(12_000_000_000);
+    const fundedQuoteAmount = new anchor.BN(10_000_000_000);
+    const extraUserQuoteAmount = new anchor.BN(0);
+    const termSec = new anchor.BN(30 * 24 * 60 * 60);
+    const totalUpfrontInterestPaid = new anchor.BN(1_000_000_000);
+    const totalProtocolFeePaid = new anchor.BN(200_000_000);
+    const totalPlatformCostPaid = new anchor.BN(300_000_000);
+
+    const [loanPositionPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("loan_position"),
+        wallet.payer.publicKey.toBuffer(),
+        loanId.toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    );
+    const [loanVaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_vault_authority"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+    const [loanQuoteVaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_quote_vault"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+    const [loanQuoteBufferVaultPda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("loan_quote_buffer_vault"), loanPositionPda.toBuffer()],
+      program.programId
+    );
+    const [borrowSlicePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("borrow_position"),
+        loanPositionPda.toBuffer(),
+        new anchor.BN(tick).toArrayLike(Buffer, "le", 4),
+      ],
+      program.programId
+    );
+
+    const baseMint = anchor.web3.Keypair.generate();
+    const [mockPumpFunGlobalParamsPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("global-params")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunSolVaultPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("sol-vault")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunMayhemStatePda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("mayhem-state"), baseMint.publicKey.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunGlobalPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("global")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunEventAuthorityPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("__event_authority")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunBondingCurvePda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("bonding-curve"), baseMint.publicKey.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunBondingCurveV2Pda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("bonding-curve-v2"), baseMint.publicKey.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const mockPumpFunAssociatedBondingCurvePda = getAssociatedTokenAddressSync(
+      baseMint.publicKey,
+      mockPumpFunBondingCurvePda,
+      true,
+      TOKEN_2022_PROGRAM_ID
+    );
+    const [mockPumpFunLoanTemporaryWsolVaultPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("temp_wsol_vault"), loanPositionPda.toBuffer(), Buffer.from("loan")],
+        program.programId
+      );
+    const [mockPumpFunMintAuthorityPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("mint-authority")],
+        mockPumpFunProgram.programId
+      );
+    const [loanExecutionWalletPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("loan_execution_wallet"), loanPositionPda.toBuffer()],
+        program.programId
+      );
+    const loanCollateralVaultPda = getAssociatedTokenAddressSync(
+      baseMint.publicKey,
+      loanExecutionWalletPda,
+      true,
+      TOKEN_2022_PROGRAM_ID
+    );
+    const userBaseAta = getAssociatedTokenAddressSync(
+      baseMint.publicKey,
+      wallet.payer.publicKey,
+      false,
+      TOKEN_2022_PROGRAM_ID
+    );
+    const [mockPumpFunGlobalVolumeAccumulatorPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("global_volume_accumulator")],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunExecutionWalletVolumeAccumulatorPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("user_volume_accumulator"), loanExecutionWalletPda.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunOwnerVolumeAccumulatorPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("user_volume_accumulator"), wallet.payer.publicKey.toBuffer()],
+        mockPumpFunProgram.programId
+      );
+    const [mockPumpFunFeeConfigPda] =
+      anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("fee_config"), pumpFeeConfigAuthority],
+        pumpFeeProgramId
+      );
+
+    const ix = await program.methods
+      .openFundExecuteLaunchPumpFun(
+        loanId,
+        routePlanHash,
+        1,
+        requestedQuoteAmount,
+        fundedQuoteAmount,
+        extraUserQuoteAmount,
+        termSec,
+        totalUpfrontInterestPaid,
+        totalProtocolFeePaid,
+        totalPlatformCostPaid,
+        [
+          {
+            tick,
+            principalAmount: fundedQuoteAmount,
+            upfrontInterestAmount: totalUpfrontInterestPaid,
+            protocolFeeAmount: totalProtocolFeePaid,
+          },
+        ],
+        true,
+        "Moono",
+        "MPT",
+        "https://mpt",
+        new anchor.BN(10_000_000_000),
+        new anchor.BN(0),
+        new anchor.BN(900_000),
+        new anchor.BN(0)
+      )
+      .accounts({
+        selfProgram: program.programId,
+        protocol: protocolPda,
+        quoteAssetPool: assetPoolPda,
+        strategyConfig: strategyConfigPda,
+        owner: wallet.payer.publicKey,
+        quoteMint: quoteMint,
+        userQuoteTokenAccount: userQuoteAta.address,
+        userExtraQuoteTokenAccount: userQuoteAta.address,
+        loanPosition: loanPositionPda,
+        loanVaultAuthority: loanVaultAuthorityPda,
+        loanQuoteVault: loanQuoteVaultPda,
+        loanQuoteBufferVault: loanQuoteBufferVaultPda,
+        protocolQuoteTreasuryAuthority: protocolQuoteTreasuryAuthorityPda,
+        protocolQuoteTreasuryVault: protocolQuoteTreasuryVaultPda,
+        vaultAuthority: vaultAuthorityPda,
+        vault: vaultPda,
+        baseMint: baseMint.publicKey,
+        loanExecutionWallet: loanExecutionWalletPda,
+        pumpFunProgram: mockPumpFunProgram.programId,
+        pumpFunGlobal: mockPumpFunGlobalPda,
+        pumpFunBondingCurve: mockPumpFunBondingCurvePda,
+        pumpFunAssociatedBondingCurve: mockPumpFunAssociatedBondingCurvePda,
+        pumpFunLoanTemporaryWsolVault: mockPumpFunLoanTemporaryWsolVaultPda,
+        pumpFunMintAuthority: mockPumpFunMintAuthorityPda,
+        pumpFunEventAuthority: mockPumpFunEventAuthorityPda,
+        pumpFunFeeRecipient: wallet.payer.publicKey,
+        pumpFunCreatorVault: loanExecutionWalletPda,
+        pumpFunMayhemProgram: mockPumpFunProgram.programId,
+        pumpFunGlobalParams: mockPumpFunGlobalParamsPda,
+        pumpFunSolVault: mockPumpFunSolVaultPda,
+        pumpFunMayhemState: mockPumpFunMayhemStatePda,
+        pumpFunMayhemTokenVault: getAssociatedTokenAddressSync(
+          baseMint.publicKey,
+          mockPumpFunSolVaultPda,
+          true,
+          TOKEN_2022_PROGRAM_ID
+        ),
+        loanCollateralVault: loanCollateralVaultPda,
+        userBaseTokenAccount: userBaseAta,
+        quoteTokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+        baseTokenProgram: TOKEN_2022_PROGRAM_ID,
+        associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .remainingAccounts([
+        { pubkey: tickPagePda, isSigner: false, isWritable: true },
+        { pubkey: borrowSlicePda, isSigner: false, isWritable: true },
+        { pubkey: mockPumpFunGlobalVolumeAccumulatorPda, isSigner: false, isWritable: false },
+        {
+          pubkey: mockPumpFunExecutionWalletVolumeAccumulatorPda,
+          isSigner: false,
+          isWritable: true,
+        },
+        { pubkey: mockPumpFunOwnerVolumeAccumulatorPda, isSigner: false, isWritable: true },
+        { pubkey: mockPumpFunFeeConfigPda, isSigner: false, isWritable: false },
+        { pubkey: pumpFeeProgramId, isSigner: false, isWritable: false },
+        { pubkey: mockPumpFunBondingCurveV2Pda, isSigner: false, isWritable: true },
+      ])
+      .instruction();
+
+    const tx = await sendVersionedTxWithLookup(
+      [
+        anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
+          units: 1_000_000,
+        }),
+        anchor.web3.ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: 1,
+        }),
+        ix,
+      ],
+      [wallet.payer, baseMint]
+    );
+
+    console.log("tx:", tx);
+
+    const loan = await program.account.loanPosition.fetch(loanPositionPda);
+    const loanCollateralVault = await getAccount(
+      provider.connection,
+      loanCollateralVaultPda,
+      undefined,
+      TOKEN_2022_PROGRAM_ID
+    );
+
+    if (loan.status !== 3) {
+      throw new Error("Loan should be EXECUTED after atomic open_fund_execute without extra");
+    }
+
+    if (loan.executedExtraUserQuoteAmount.toString() !== "0") {
+      throw new Error("executedExtraUserQuoteAmount should be zero");
+    }
+
+    if (loan.immediateUserBaseAmount.toString() !== "0") {
+      throw new Error("immediateUserBaseAmount should be zero");
+    }
+
+    if (loan.executedLoanQuoteAmount.toString() !== "10000000000") {
+      throw new Error("executedLoanQuoteAmount mismatch");
+    }
+
+    if (Number(loanCollateralVault.amount) !== 1_000_000) {
+      throw new Error("loan collateral vault base amount mismatch");
+    }
+  });
+
   it("execute_launch_pump_fun_rejects_non_wsol_quote_pool", async () => {
     const [protocolPda] = await ensureProtocolInitialized();
 
@@ -4291,7 +5005,7 @@ describe("moono", () => {
     const tokenUri = "https://mpt";
 
     try {
-      await program.methods
+      const executeIx = await program.methods
         .executeLaunchPumpFun(
           true,
           tokenName,
@@ -4346,13 +5060,17 @@ describe("moono", () => {
           { pubkey: pumpFeeProgramId, isSigner: false, isWritable: false },
           { pubkey: mockPumpFunBondingCurveV2Pda, isSigner: false, isWritable: true },
         ])
-        .preInstructions([
+        .instruction();
+
+      await sendVersionedTxWithLookup(
+        [
           anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
             units: 400_000,
           }),
-        ])
-        .signers([wallet.payer, baseMint])
-        .rpc();
+          executeIx,
+        ],
+        [wallet.payer, baseMint]
+      );
       throw new Error("Expected executeLaunchPumpFun to reject non-WSOL quote");
     } catch (error: any) {
       const errorCode = error?.error?.errorCode?.code ?? "";
@@ -4652,7 +5370,7 @@ describe("moono", () => {
     const tokenUri = "https://mpt";
 
     try {
-      await program.methods
+      const executeIx = await program.methods
         .executeLaunchPumpFun(
           true,
           tokenName,
@@ -4707,13 +5425,17 @@ describe("moono", () => {
           { pubkey: pumpFeeProgramId, isSigner: false, isWritable: false },
           { pubkey: mockPumpFunBondingCurveV2Pda, isSigner: false, isWritable: true },
         ])
-        .preInstructions([
+        .instruction();
+
+      await sendVersionedTxWithLookup(
+        [
           anchor.web3.ComputeBudgetProgram.setComputeUnitLimit({
             units: 400_000,
           }),
-        ])
-        .signers([wallet.payer, baseMint])
-        .rpc();
+          executeIx,
+        ],
+        [wallet.payer, baseMint]
+      );
       throw new Error("Expected executeLaunchPumpFun to reject slippage exceeded");
     } catch (error: any) {
       const errorCode = error?.error?.errorCode?.code ?? "";

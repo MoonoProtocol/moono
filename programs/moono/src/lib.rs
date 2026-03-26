@@ -180,4 +180,51 @@ pub mod moono {
             immediate_user_min_base_out,
         )
     }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_fund_execute_launch_pump_fun<'info>(
+        ctx: Context<'_, '_, 'info, 'info, OpenFundExecuteLaunchPumpFun<'info>>,
+        loan_id: u64,
+        route_plan_hash: [u8; 32],
+        planned_slice_count: u16,
+        requested_quote_amount: u64,
+        funded_quote_amount: u64,
+        extra_user_quote_amount: u64,
+        term_sec: u64,
+        total_upfront_interest_paid: u64,
+        total_protocol_fee_paid: u64,
+        total_platform_cost_paid: u64,
+        fills: Vec<FundLoanFill>,
+        use_create_v2: bool,
+        name: String,
+        symbol: String,
+        uri: String,
+        loan_quote_spend_amount: u64,
+        extra_user_quote_spend_amount: u64,
+        collateral_min_base_out: u64,
+        immediate_user_min_base_out: u64,
+    ) -> Result<()> {
+        instructions::open_fund_execute_launch_pump_fun::handle_open_fund_execute_launch_pump_fun(
+            ctx,
+            loan_id,
+            route_plan_hash,
+            planned_slice_count,
+            requested_quote_amount,
+            funded_quote_amount,
+            extra_user_quote_amount,
+            term_sec,
+            total_upfront_interest_paid,
+            total_protocol_fee_paid,
+            total_platform_cost_paid,
+            fills,
+            use_create_v2,
+            name,
+            symbol,
+            uri,
+            loan_quote_spend_amount,
+            extra_user_quote_spend_amount,
+            collateral_min_base_out,
+            immediate_user_min_base_out,
+        )
+    }
 }

@@ -42,6 +42,8 @@ export ANCHOR_WALLET=$PWD/keys/deployer.json
 
 # Pump.fun execution
 ./scripts/test.sh execute_launch_pump_fun_moves_quote_and_splits_base_output
+./scripts/test.sh open_fund_execute_launch_pump_fun_is_atomic
+./scripts/test.sh open_fund_execute_launch_pump_fun_is_atomic_without_extra_buy
 ./scripts/test.sh execute_launch_pump_fun_delivers_base_to_user_for_extra_buy
 ./scripts/test.sh execute_launch_pump_fun_rejects_non_wsol_quote_pool
 ./scripts/test.sh execute_launch_pump_fun_rejects_slippage_exceeded
