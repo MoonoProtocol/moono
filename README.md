@@ -22,9 +22,11 @@ export ANCHOR_WALLET=$PWD/keys/deployer.json
 
 # LP deposits and withdrawals
 ./scripts/test.sh deposit_to_tick_transfers_tokens_into_vault
+./scripts/test.sh deposit_to_tick_transfers_wsol_into_asset_pool_vault
 ./scripts/test.sh deposit_to_tick_rejects_wrong_tick_page
 ./scripts/test.sh deposit_to_tick_fails_when_protocol_is_paused
 ./scripts/test.sh withdraw_from_tick_transfers_tokens_back_to_user
+./scripts/test.sh withdraw_from_tick_transfers_wsol_back_to_user
 
 # Execution strategy config
 ./scripts/test.sh initialize_execution_strategy_config
@@ -40,6 +42,7 @@ export ANCHOR_WALLET=$PWD/keys/deployer.json
 
 # Pump.fun execution
 ./scripts/test.sh execute_launch_pump_fun_moves_quote_and_splits_base_output
+./scripts/test.sh execute_launch_pump_fun_delivers_base_to_user_for_extra_buy
 ./scripts/test.sh execute_launch_pump_fun_rejects_non_wsol_quote_pool
 ./scripts/test.sh execute_launch_pump_fun_rejects_slippage_exceeded
 

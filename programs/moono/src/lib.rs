@@ -157,8 +157,8 @@ pub mod moono {
         instructions::fund_loan_from_ticks::handle_fund_loan_from_ticks(ctx, fills)
     }
 
-    pub fn execute_launch_pump_fun(
-        ctx: Context<ExecuteLaunchPumpFun>,
+    pub fn execute_launch_pump_fun<'info>(
+        ctx: Context<'_, '_, 'info, 'info, ExecuteLaunchPumpFun<'info>>,
         use_create_v2: bool,
         name: String,
         symbol: String,

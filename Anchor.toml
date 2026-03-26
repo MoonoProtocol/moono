@@ -9,12 +9,15 @@ skip-lint = false
 moono = "moonoL26kRC8S49yPuuopKhbNhvgf2h4Dva91noD8rN"
 mock_pump_fun = "pump5khDuXvghyrSQATnojua6ydquBG5fN7FibwHF4e"
 
+[programs.devnet]
+moono = "moonoL26kRC8S49yPuuopKhbNhvgf2h4Dva91noD8rN"
+
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
 cluster = "localnet"
-wallet = "~/.config/solana/id.json"
+wallet = "./keys/deployer.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 \"tests/**/*.ts\""

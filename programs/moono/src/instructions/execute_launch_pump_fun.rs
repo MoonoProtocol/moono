@@ -10,6 +10,9 @@ use sha2::{Digest, Sha256};
 use spl_token::native_mint::ID as WSOL_MINT;
 use spl_token::state::{Account as SplTokenAccount, Mint as SplMint};
 use spl_token::solana_program::program_pack::Pack;
+use spl_token_2022::extension::StateWithExtensions;
+use spl_token_2022::state::Account as SplToken2022Account;
+use spl_token_2022::state::Mint as SplMint2022;
 use spl_associated_token_account::{
     get_associated_token_address_with_program_id,
     instruction::create_associated_token_account_idempotent,
@@ -26,12 +29,24 @@ struct PumpFunCreateIxArgs {
     name: String,
     symbol: String,
     uri: String,
+    creator: Pubkey,
 }
 
 #[derive(AnchorSerialize)]
-struct PumpFunBuyExactSolInIxArgs {
-    quote_spend_amount: u64,
-    min_base_output_amount: u64,
+struct PumpFunCreateV2IxArgs {
+    name: String,
+    symbol: String,
+    uri: String,
+    creator: Pubkey,
+    is_mayhem_mode: bool,
+    is_cashback_enabled: PumpFunOptionBool,
+}
+
+#[derive(AnchorSerialize)]
+#[allow(dead_code)]
+enum PumpFunOptionBool {
+    None,
+    Some(bool),
 }
 
 fn anchor_discriminator(name: &str) -> [u8; 8] {
@@ -41,6 +56,10 @@ fn anchor_discriminator(name: &str) -> [u8; 8] {
     discriminator
 }
 
+fn derive_pda(program_id: &Pubkey, seeds: &[&[u8]]) -> Pubkey {
+    Pubkey::find_program_address(seeds, program_id).0
+}
+
 fn build_ix_data<T: AnchorSerialize>(name: &str, args: &T) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     data.extend_from_slice(&anchor_discriminator(name));
@@ -48,14 +67,101 @@ fn build_ix_data<T: AnchorSerialize>(name: &str, args: &T) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-fn ensure_base_mint_initialized(ctx: &Context<ExecuteLaunchPumpFun>) -> Result<()> {
+fn build_buy_exact_sol_in_ix_data(
+    quote_spend_amount: u64,
+    min_base_output_amount: u64,
+) -> Vec<u8> {
+    let mut data = Vec::with_capacity(8 + 8 + 8 + 1);
+    data.extend_from_slice(&anchor_discriminator("buy_exact_sol_in"));
+    data.extend_from_slice(&quote_spend_amount.to_le_bytes());
+    data.extend_from_slice(&min_base_output_amount.to_le_bytes());
+    // Matches the working live pump.fun transaction payload.
+    data.push(1);
+    data
+}
+
+fn validate_pump_fun_accounts(
+    ctx: &Context<ExecuteLaunchPumpFun>,
+    use_create_v2: bool,
+) -> Result<()> {
+    let pump_fun_program_id = ctx.accounts.pump_fun_program.key();
+    let mayhem_program_id = ctx.accounts.pump_fun_mayhem_program.key();
+    let base_mint_key = ctx.accounts.base_mint.key();
+
+    require!(
+        ctx.accounts.pump_fun_global.key() == derive_pda(&pump_fun_program_id, &[b"global"]),
+        MoonoError::InvalidPumpFunAccount
+    );
+    require!(
+        ctx.accounts.pump_fun_mint_authority.key()
+            == derive_pda(&pump_fun_program_id, &[b"mint-authority"]),
+        MoonoError::InvalidPumpFunAccount
+    );
+    require!(
+        ctx.accounts.pump_fun_bonding_curve.key()
+            == derive_pda(&pump_fun_program_id, &[b"bonding-curve", base_mint_key.as_ref()]),
+        MoonoError::InvalidPumpFunAccount
+    );
+    require!(
+        ctx.accounts.pump_fun_associated_bonding_curve.key()
+            == get_associated_token_address_with_program_id(
+                &ctx.accounts.pump_fun_bonding_curve.key(),
+                &base_mint_key,
+                &ctx.accounts.base_token_program.key(),
+            ),
+        MoonoError::InvalidTokenAccount
+    );
+    require!(
+        ctx.accounts.pump_fun_event_authority.key()
+            == derive_pda(&pump_fun_program_id, &[b"__event_authority"]),
+        MoonoError::InvalidPumpFunAccount
+    );
+    if use_create_v2 {
+        require!(
+            ctx.accounts.pump_fun_global_params.key()
+                == derive_pda(&mayhem_program_id, &[b"global-params"]),
+            MoonoError::InvalidPumpFunAccount
+        );
+        require!(
+            ctx.accounts.pump_fun_sol_vault.key()
+                == derive_pda(&mayhem_program_id, &[b"sol-vault"]),
+            MoonoError::InvalidPumpFunAccount
+        );
+        require!(
+            ctx.accounts.pump_fun_mayhem_state.key()
+                == derive_pda(&mayhem_program_id, &[b"mayhem-state", base_mint_key.as_ref()]),
+            MoonoError::InvalidPumpFunAccount
+        );
+        require!(
+            ctx.accounts.pump_fun_mayhem_token_vault.key()
+                == get_associated_token_address_with_program_id(
+                    &ctx.accounts.pump_fun_sol_vault.key(),
+                    &base_mint_key,
+                    &ctx.accounts.base_token_program.key(),
+                ),
+            MoonoError::InvalidTokenAccount
+        );
+    }
+
+    Ok(())
+}
+
+fn ensure_base_mint_initialized(
+    ctx: &Context<ExecuteLaunchPumpFun>,
+    use_create_v2: bool,
+) -> Result<()> {
     if !ctx.accounts.base_mint.data_is_empty() {
         return Ok(());
     }
 
     let rent = Rent::get()?;
-    let mint_space = SplMint::LEN as u64;
-    let mint_lamports = rent.minimum_balance(SplMint::LEN);
+    let mint_len = if use_create_v2 {
+        SplMint2022::LEN
+    } else {
+        SplMint::LEN
+    };
+    let mint_space = mint_len as u64;
+    let mint_lamports = rent.minimum_balance(mint_len);
 
     invoke(
         &anchor_lang::solana_program::system_instruction::create_account(
@@ -63,7 +169,7 @@ fn ensure_base_mint_initialized(ctx: &Context<ExecuteLaunchPumpFun>) -> Result<(
             &ctx.accounts.base_mint.key(),
             mint_lamports,
             mint_space,
-            &ctx.accounts.token_program.key(),
+            &ctx.accounts.base_token_program.key(),
         ),
         &[
             ctx.accounts.owner.to_account_info(),
@@ -72,19 +178,35 @@ fn ensure_base_mint_initialized(ctx: &Context<ExecuteLaunchPumpFun>) -> Result<(
         ],
     )?;
 
-    invoke(
-        &spl_token::instruction::initialize_mint2(
-            &ctx.accounts.token_program.key(),
-            &ctx.accounts.base_mint.key(),
-            &ctx.accounts.pump_fun_mint_authority.key(),
-            None,
-            6,
-        )?,
-        &[
-            ctx.accounts.base_mint.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
-        ],
-    )?;
+    if use_create_v2 {
+        invoke(
+            &spl_token_2022::instruction::initialize_mint2(
+                &ctx.accounts.base_token_program.key(),
+                &ctx.accounts.base_mint.key(),
+                &ctx.accounts.pump_fun_mint_authority.key(),
+                None,
+                6,
+            )?,
+            &[
+                ctx.accounts.base_mint.to_account_info(),
+                ctx.accounts.base_token_program.to_account_info(),
+            ],
+        )?;
+    } else {
+        invoke(
+            &spl_token::instruction::initialize_mint2(
+                &ctx.accounts.base_token_program.key(),
+                &ctx.accounts.base_mint.key(),
+                &ctx.accounts.pump_fun_mint_authority.key(),
+                None,
+                6,
+            )?,
+            &[
+                ctx.accounts.base_mint.to_account_info(),
+                ctx.accounts.base_token_program.to_account_info(),
+            ],
+        )?;
+    }
 
     Ok(())
 }
@@ -127,7 +249,7 @@ fn ensure_collateral_vault_initialized(ctx: &Context<ExecuteLaunchPumpFun>) -> R
     let expected_ata = get_associated_token_address_with_program_id(
         &ctx.accounts.loan_execution_wallet.key(),
         &ctx.accounts.base_mint.key(),
-        &ctx.accounts.token_program.key(),
+        &ctx.accounts.base_token_program.key(),
     );
     require!(
         ctx.accounts.loan_collateral_vault.key() == expected_ata,
@@ -143,7 +265,7 @@ fn ensure_collateral_vault_initialized(ctx: &Context<ExecuteLaunchPumpFun>) -> R
             &ctx.accounts.owner.key(),
             &ctx.accounts.loan_execution_wallet.key(),
             &ctx.accounts.base_mint.key(),
-            &ctx.accounts.token_program.key(),
+            &ctx.accounts.base_token_program.key(),
         ),
         &[
             ctx.accounts.owner.to_account_info(),
@@ -151,7 +273,7 @@ fn ensure_collateral_vault_initialized(ctx: &Context<ExecuteLaunchPumpFun>) -> R
             ctx.accounts.loan_execution_wallet.to_account_info(),
             ctx.accounts.base_mint.to_account_info(),
             ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.base_token_program.to_account_info(),
             ctx.accounts.associated_token_program.to_account_info(),
         ],
     )?;
@@ -163,7 +285,7 @@ fn ensure_user_base_token_account_initialized(ctx: &Context<ExecuteLaunchPumpFun
     let expected_ata = get_associated_token_address_with_program_id(
         &ctx.accounts.owner.key(),
         &ctx.accounts.base_mint.key(),
-        &ctx.accounts.token_program.key(),
+        &ctx.accounts.base_token_program.key(),
     );
     require!(
         ctx.accounts.user_base_token_account.key() == expected_ata,
@@ -179,7 +301,7 @@ fn ensure_user_base_token_account_initialized(ctx: &Context<ExecuteLaunchPumpFun
             &ctx.accounts.owner.key(),
             &ctx.accounts.owner.key(),
             &ctx.accounts.base_mint.key(),
-            &ctx.accounts.token_program.key(),
+            &ctx.accounts.base_token_program.key(),
         ),
         &[
             ctx.accounts.owner.to_account_info(),
@@ -187,7 +309,7 @@ fn ensure_user_base_token_account_initialized(ctx: &Context<ExecuteLaunchPumpFun
             ctx.accounts.owner.to_account_info(),
             ctx.accounts.base_mint.to_account_info(),
             ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.base_token_program.to_account_info(),
             ctx.accounts.associated_token_program.to_account_info(),
         ],
     )?;
@@ -201,7 +323,7 @@ fn ensure_pump_fun_associated_bonding_curve_initialized(
     let expected_ata = get_associated_token_address_with_program_id(
         &ctx.accounts.pump_fun_bonding_curve.key(),
         &ctx.accounts.base_mint.key(),
-        &ctx.accounts.token_program.key(),
+        &ctx.accounts.base_token_program.key(),
     );
     require!(
         ctx.accounts.pump_fun_associated_bonding_curve.key() == expected_ata,
@@ -217,7 +339,7 @@ fn ensure_pump_fun_associated_bonding_curve_initialized(
             &ctx.accounts.owner.key(),
             &ctx.accounts.pump_fun_bonding_curve.key(),
             &ctx.accounts.base_mint.key(),
-            &ctx.accounts.token_program.key(),
+            &ctx.accounts.base_token_program.key(),
         ),
         &[
             ctx.accounts.owner.to_account_info(),
@@ -225,7 +347,7 @@ fn ensure_pump_fun_associated_bonding_curve_initialized(
             ctx.accounts.pump_fun_bonding_curve.to_account_info(),
             ctx.accounts.base_mint.to_account_info(),
             ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
+            ctx.accounts.base_token_program.to_account_info(),
             ctx.accounts.associated_token_program.to_account_info(),
         ],
     )?;
@@ -235,7 +357,34 @@ fn ensure_pump_fun_associated_bonding_curve_initialized(
 
 fn read_token_account(account_info: &AccountInfo) -> Result<SplTokenAccount> {
     let data = account_info.try_borrow_data()?;
-    SplTokenAccount::unpack(&data).map_err(Into::into)
+    if account_info.owner == &spl_token_2022::ID {
+        let token_2022 = StateWithExtensions::<SplToken2022Account>::unpack(&data)
+            .map_err(ProgramError::from)?
+            .base;
+        let state = match token_2022.state {
+            spl_token_2022::state::AccountState::Uninitialized => {
+                spl_token::state::AccountState::Uninitialized
+            }
+            spl_token_2022::state::AccountState::Initialized => {
+                spl_token::state::AccountState::Initialized
+            }
+            spl_token_2022::state::AccountState::Frozen => {
+                spl_token::state::AccountState::Frozen
+            }
+        };
+        Ok(SplTokenAccount {
+            mint: token_2022.mint,
+            owner: token_2022.owner,
+            amount: token_2022.amount,
+            delegate: token_2022.delegate,
+            state,
+            is_native: token_2022.is_native,
+            delegated_amount: token_2022.delegated_amount,
+            close_authority: token_2022.close_authority,
+        })
+    } else {
+        SplTokenAccount::unpack(&data).map_err(Into::into)
+    }
 }
 
 fn ensure_temp_wsol_vault_initialized<'info>(
@@ -243,8 +392,8 @@ fn ensure_temp_wsol_vault_initialized<'info>(
     quote_mint: &InterfaceAccount<'info, Mint>,
     temp_wsol_vault: &UncheckedAccount<'info>,
     temp_wsol_vault_signers: &[&[&[u8]]],
-    quote_sink_authority: &UncheckedAccount<'info>,
-    token_program: &Interface<'info, TokenInterface>,
+    token_authority: &AccountInfo<'info>,
+    quote_token_program: &Interface<'info, TokenInterface>,
     system_program: &Program<'info, System>,
 ) -> Result<()> {
     if !temp_wsol_vault.data_is_empty() {
@@ -257,7 +406,7 @@ fn ensure_temp_wsol_vault_initialized<'info>(
             &temp_wsol_vault.key(),
             Rent::get()?.minimum_balance(SplTokenAccount::LEN),
             SplTokenAccount::LEN as u64,
-            &token_program.key(),
+            &quote_token_program.key(),
         ),
         &[
             payer.to_account_info(),
@@ -269,16 +418,16 @@ fn ensure_temp_wsol_vault_initialized<'info>(
 
     invoke(
         &spl_token::instruction::initialize_account3(
-            &token_program.key(),
+            &quote_token_program.key(),
             &temp_wsol_vault.key(),
             &quote_mint.key(),
-            &quote_sink_authority.key(),
+            token_authority.key,
         )?,
         &[
             temp_wsol_vault.to_account_info(),
             quote_mint.to_account_info(),
-            quote_sink_authority.to_account_info(),
-            token_program.to_account_info(),
+            token_authority.clone(),
+            quote_token_program.to_account_info(),
         ],
     )?;
 
@@ -291,13 +440,13 @@ fn unwrap_wsol_to_lamports<'info>(
     source_token_account: &InterfaceAccount<'info, TokenAccount>,
     source_authority: &AccountInfo<'info>,
     source_authority_signers: &[&[&[u8]]],
-    quote_sink_authority: &UncheckedAccount<'info>,
-    quote_sink_authority_signers: &[&[&[u8]]],
+    temp_token_authority: &AccountInfo<'info>,
+    temp_token_authority_signers: &[&[&[u8]]],
     temp_wsol_vault: &UncheckedAccount<'info>,
     temp_wsol_vault_signers: &[&[&[u8]]],
     lamport_destination: &AccountInfo<'info>,
     amount: u64,
-    token_program: &Interface<'info, TokenInterface>,
+    quote_token_program: &Interface<'info, TokenInterface>,
     system_program: &Program<'info, System>,
 ) -> Result<()> {
     ensure_temp_wsol_vault_initialized(
@@ -305,14 +454,14 @@ fn unwrap_wsol_to_lamports<'info>(
         quote_mint,
         temp_wsol_vault,
         temp_wsol_vault_signers,
-        quote_sink_authority,
-        token_program,
+        temp_token_authority,
+        quote_token_program,
         system_program,
     )?;
 
     transfer_checked(
         CpiContext::new_with_signer(
-            token_program.to_account_info(),
+            quote_token_program.to_account_info(),
             TransferChecked {
                 from: source_token_account.to_account_info(),
                 mint: quote_mint.to_account_info(),
@@ -327,26 +476,26 @@ fn unwrap_wsol_to_lamports<'info>(
 
     invoke_signed(
         &spl_token::instruction::close_account(
-            &token_program.key(),
+            &quote_token_program.key(),
             &temp_wsol_vault.key(),
             lamport_destination.key,
-            &quote_sink_authority.key(),
+            temp_token_authority.key,
             &[],
         )?,
         &[
             temp_wsol_vault.to_account_info(),
             lamport_destination.clone(),
-            quote_sink_authority.to_account_info(),
-            token_program.to_account_info(),
+            temp_token_authority.clone(),
+            quote_token_program.to_account_info(),
         ],
-        quote_sink_authority_signers,
+        temp_token_authority_signers,
     )?;
 
     Ok(())
 }
 
-pub fn handle_execute_launch_pump_fun(
-    ctx: Context<ExecuteLaunchPumpFun>,
+pub fn handle_execute_launch_pump_fun<'info>(
+    ctx: Context<'_, '_, 'info, 'info, ExecuteLaunchPumpFun<'info>>,
     use_create_v2: bool,
     name: String,
     symbol: String,
@@ -401,32 +550,43 @@ pub fn handle_execute_launch_pump_fun(
         MoonoError::ExtraUserQuoteAmountExceeded
     );
 
-    ensure_base_mint_initialized(&ctx)?;
-    ensure_execution_wallet_initialized(&ctx)?;
-    ensure_pump_fun_associated_bonding_curve_initialized(&ctx)?;
-    ensure_collateral_vault_initialized(&ctx)?;
-    ensure_user_base_token_account_initialized(&ctx)?;
+    validate_pump_fun_accounts(&ctx, use_create_v2)?;
 
-    let collateral_before_account = read_token_account(&ctx.accounts.loan_collateral_vault)?;
-    let user_base_before_account = read_token_account(&ctx.accounts.user_base_token_account)?;
-    require!(
-        collateral_before_account.mint == ctx.accounts.base_mint.key(),
-        MoonoError::WrongMint
-    );
-    require!(
-        collateral_before_account.owner == ctx.accounts.loan_execution_wallet.key(),
-        MoonoError::InvalidTokenAccount
-    );
-    require!(
-        user_base_before_account.mint == ctx.accounts.base_mint.key(),
-        MoonoError::WrongMint
-    );
-    require!(
-        user_base_before_account.owner == ctx.accounts.owner.key(),
-        MoonoError::InvalidTokenAccount
-    );
-    let collateral_before = collateral_before_account.amount;
-    let user_base_before = user_base_before_account.amount;
+    ensure_execution_wallet_initialized(&ctx)?;
+    if use_create_v2 {
+        require!(
+            ctx.accounts.base_mint.data_is_empty(),
+            MoonoError::InvalidTokenAccount
+        );
+    } else {
+        ensure_base_mint_initialized(&ctx, false)?;
+        ensure_pump_fun_associated_bonding_curve_initialized(&ctx)?;
+        ensure_collateral_vault_initialized(&ctx)?;
+        ensure_user_base_token_account_initialized(&ctx)?;
+    }
+    let (collateral_before, user_base_before) = if use_create_v2 {
+        (0u64, 0u64)
+    } else {
+        let collateral_before_account = read_token_account(&ctx.accounts.loan_collateral_vault)?;
+        let user_base_before_account = read_token_account(&ctx.accounts.user_base_token_account)?;
+        require!(
+            collateral_before_account.mint == ctx.accounts.base_mint.key(),
+            MoonoError::WrongMint
+        );
+        require!(
+            collateral_before_account.owner == ctx.accounts.loan_execution_wallet.key(),
+            MoonoError::InvalidTokenAccount
+        );
+        require!(
+            user_base_before_account.mint == ctx.accounts.base_mint.key(),
+            MoonoError::WrongMint
+        );
+        require!(
+            user_base_before_account.owner == ctx.accounts.owner.key(),
+            MoonoError::InvalidTokenAccount
+        );
+        (collateral_before_account.amount, user_base_before_account.amount)
+    };
 
     let loan_position_key = loan_position.key();
     let loan_execution_wallet_bump = ctx.bumps.loan_execution_wallet;
@@ -443,14 +603,6 @@ pub fn handle_execute_launch_pump_fun(
         loan_position_key.as_ref(),
         &loan_vault_authority_bump_seed,
     ];
-    let quote_sink_authority_bump = ctx.bumps.pump_fun_quote_sink_authority;
-    let quote_sink_authority_bump_seed = [quote_sink_authority_bump];
-    let quote_sink_authority_signer_seeds: &[&[u8]] = &[
-        b"quote_sink_authority",
-        loan_position_key.as_ref(),
-        &quote_sink_authority_bump_seed,
-    ];
-    let quote_sink_authority_signers: &[&[&[u8]]] = &[quote_sink_authority_signer_seeds];
     let loan_temp_wsol_bump = ctx.bumps.pump_fun_loan_temporary_wsol_vault;
     let loan_temp_wsol_bump_seed = [loan_temp_wsol_bump];
     let loan_temp_wsol_signer_seeds: &[&[u8]] = &[
@@ -460,15 +612,6 @@ pub fn handle_execute_launch_pump_fun(
         &loan_temp_wsol_bump_seed,
     ];
     let loan_temp_wsol_signers: &[&[&[u8]]] = &[loan_temp_wsol_signer_seeds];
-    let user_temp_wsol_bump = ctx.bumps.pump_fun_user_temporary_wsol_vault;
-    let user_temp_wsol_bump_seed = [user_temp_wsol_bump];
-    let user_temp_wsol_signer_seeds: &[&[u8]] = &[
-        b"temp_wsol_vault",
-        loan_position_key.as_ref(),
-        b"user",
-        &user_temp_wsol_bump_seed,
-    ];
-    let user_temp_wsol_signers: &[&[&[u8]]] = &[user_temp_wsol_signer_seeds];
     let borrowed_buy_signers: &[&[&[u8]]] = &[
         loan_execution_wallet_signer_seeds,
         loan_vault_authority_signer_seeds,
@@ -480,63 +623,139 @@ pub fn handle_execute_launch_pump_fun(
         &ctx.accounts.loan_quote_vault,
         &ctx.accounts.loan_vault_authority.to_account_info(),
         &[loan_vault_authority_signer_seeds],
-        &ctx.accounts.pump_fun_quote_sink_authority,
-        quote_sink_authority_signers,
+        &ctx.accounts.loan_vault_authority.to_account_info(),
+        &[loan_vault_authority_signer_seeds],
         &ctx.accounts.pump_fun_loan_temporary_wsol_vault,
         loan_temp_wsol_signers,
         &ctx.accounts.loan_execution_wallet.to_account_info(),
         loan_quote_spend_amount,
-        &ctx.accounts.token_program,
+        &ctx.accounts.quote_token_program,
         &ctx.accounts.system_program,
     )?;
 
-    invoke_signed(
-        &Instruction {
-            program_id: ctx.accounts.pump_fun_program.key(),
-            accounts: vec![
-                AccountMeta::new(ctx.accounts.base_mint.key(), true),
-                AccountMeta::new_readonly(ctx.accounts.pump_fun_mint_authority.key(), false),
-                AccountMeta::new(ctx.accounts.pump_fun_bonding_curve.key(), false),
-                AccountMeta::new(ctx.accounts.pump_fun_associated_bonding_curve.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.pump_fun_global.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.pump_fun_mpl_token_metadata.key(), false),
-                AccountMeta::new(ctx.accounts.pump_fun_metadata.key(), false),
-                AccountMeta::new(ctx.accounts.owner.key(), true),
-                AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.associated_token_program.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.rent.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.pump_fun_event_authority.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.pump_fun_program.key(), false),
-            ],
-            data: build_ix_data(
-                if use_create_v2 { "create_v2" } else { "create" },
-                &PumpFunCreateIxArgs { name, symbol, uri },
-            )?,
-        },
-        &[
-            ctx.accounts.base_mint.to_account_info(),
-            ctx.accounts.pump_fun_mint_authority.to_account_info(),
-            ctx.accounts.pump_fun_bonding_curve.to_account_info(),
-            ctx.accounts.pump_fun_associated_bonding_curve.to_account_info(),
-            ctx.accounts.pump_fun_global.to_account_info(),
-            ctx.accounts.pump_fun_mpl_token_metadata.to_account_info(),
-            ctx.accounts.pump_fun_metadata.to_account_info(),
-            ctx.accounts.owner.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
-            ctx.accounts.associated_token_program.to_account_info(),
-            ctx.accounts.rent.to_account_info(),
-            ctx.accounts.pump_fun_event_authority.to_account_info(),
-            ctx.accounts.pump_fun_program.to_account_info(),
-        ],
-        &[],
-    )?;
+    let create_account_metas = if use_create_v2 {
+                vec![
+                    AccountMeta::new(ctx.accounts.base_mint.key(), true),
+                    AccountMeta::new_readonly(ctx.accounts.pump_fun_mint_authority.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_bonding_curve.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_associated_bonding_curve.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.pump_fun_global.key(), false),
+                    AccountMeta::new(ctx.accounts.owner.key(), true),
+                    AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.base_token_program.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.associated_token_program.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_mayhem_program.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_global_params.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_sol_vault.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_mayhem_state.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_mayhem_token_vault.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.pump_fun_event_authority.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.pump_fun_program.key(), false),
+                ]
+            } else {
+                require!(
+                    ctx.remaining_accounts.len() >= 3,
+                    MoonoError::InvalidRemainingAccounts
+                );
+                vec![
+                    AccountMeta::new(ctx.accounts.base_mint.key(), true),
+                    AccountMeta::new_readonly(ctx.accounts.pump_fun_mint_authority.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_bonding_curve.key(), false),
+                    AccountMeta::new(ctx.accounts.pump_fun_associated_bonding_curve.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.pump_fun_global.key(), false),
+                    AccountMeta::new_readonly(ctx.remaining_accounts[0].key(), false),
+                    AccountMeta::new(ctx.remaining_accounts[1].key(), false),
+                    AccountMeta::new(ctx.accounts.owner.key(), true),
+                    AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.base_token_program.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.associated_token_program.key(), false),
+                    AccountMeta::new_readonly(ctx.remaining_accounts[2].key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.pump_fun_event_authority.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.pump_fun_program.key(), false),
+                ]
+            };
+    let create_ix_data = if use_create_v2 {
+        build_ix_data(
+            "create_v2",
+            &PumpFunCreateV2IxArgs {
+                name,
+                symbol,
+                uri,
+                creator: ctx.accounts.owner.key(),
+                is_mayhem_mode: false,
+                is_cashback_enabled: PumpFunOptionBool::None,
+            },
+        )?
+    } else {
+        build_ix_data(
+            "create",
+            &PumpFunCreateIxArgs {
+                name,
+                symbol,
+                uri,
+                creator: ctx.accounts.owner.key(),
+            },
+        )?
+    };
+    let create_account_infos = if use_create_v2 {
+        vec![
+                ctx.accounts.base_mint.to_account_info(),
+                ctx.accounts.pump_fun_mint_authority.to_account_info(),
+                ctx.accounts.pump_fun_bonding_curve.to_account_info(),
+                ctx.accounts.pump_fun_associated_bonding_curve.to_account_info(),
+                ctx.accounts.pump_fun_global.to_account_info(),
+                ctx.accounts.owner.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+                ctx.accounts.base_token_program.to_account_info(),
+                ctx.accounts.associated_token_program.to_account_info(),
+                ctx.accounts.pump_fun_mayhem_program.to_account_info(),
+                ctx.accounts.pump_fun_global_params.to_account_info(),
+                ctx.accounts.pump_fun_sol_vault.to_account_info(),
+                ctx.accounts.pump_fun_mayhem_state.to_account_info(),
+                ctx.accounts.pump_fun_mayhem_token_vault.to_account_info(),
+                ctx.accounts.pump_fun_event_authority.to_account_info(),
+                ctx.accounts.pump_fun_program.to_account_info(),
+            ]
+    } else {
+        require!(
+            ctx.remaining_accounts.len() >= 3,
+            MoonoError::InvalidRemainingAccounts
+        );
+        vec![
+                ctx.accounts.base_mint.to_account_info(),
+                ctx.accounts.pump_fun_mint_authority.to_account_info(),
+                ctx.accounts.pump_fun_bonding_curve.to_account_info(),
+                ctx.accounts.pump_fun_associated_bonding_curve.to_account_info(),
+                ctx.accounts.pump_fun_global.to_account_info(),
+                ctx.remaining_accounts[0].clone(),
+                ctx.remaining_accounts[1].clone(),
+                ctx.accounts.owner.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+                ctx.accounts.base_token_program.to_account_info(),
+                ctx.accounts.associated_token_program.to_account_info(),
+                ctx.remaining_accounts[2].clone(),
+                ctx.accounts.pump_fun_event_authority.to_account_info(),
+                ctx.accounts.pump_fun_program.to_account_info(),
+            ]
+    };
 
     invoke_signed(
         &Instruction {
             program_id: ctx.accounts.pump_fun_program.key(),
-            accounts: vec![
+            accounts: create_account_metas,
+            data: create_ix_data,
+        },
+        &create_account_infos,
+        &[],
+    )?;
+
+    if use_create_v2 {
+        ensure_collateral_vault_initialized(&ctx)?;
+        ensure_user_base_token_account_initialized(&ctx)?;
+    }
+
+    let collateral_buy_metas = {
+        let mut metas = vec![
                 AccountMeta::new_readonly(ctx.accounts.pump_fun_global.key(), false),
                 AccountMeta::new(ctx.accounts.pump_fun_fee_recipient.key(), false),
                 AccountMeta::new(ctx.accounts.base_mint.key(), false),
@@ -545,33 +764,55 @@ pub fn handle_execute_launch_pump_fun(
                 AccountMeta::new(ctx.accounts.loan_collateral_vault.key(), false),
                 AccountMeta::new(ctx.accounts.loan_execution_wallet.key(), true),
                 AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
-                AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.base_token_program.key(), false),
                 AccountMeta::new(ctx.accounts.pump_fun_creator_vault.key(), false),
                 AccountMeta::new_readonly(ctx.accounts.pump_fun_event_authority.key(), false),
                 AccountMeta::new_readonly(ctx.accounts.pump_fun_program.key(), false),
-            ],
-            data: build_ix_data(
-                "buy_exact_sol_in",
-                &PumpFunBuyExactSolInIxArgs {
-                    quote_spend_amount: loan_quote_spend_amount,
-                    min_base_output_amount: collateral_min_base_out,
-                },
-            )?,
+        ];
+        if use_create_v2 {
+            require!(
+                ctx.remaining_accounts.len() >= 6,
+                MoonoError::InvalidRemainingAccounts
+            );
+            metas.push(AccountMeta::new_readonly(ctx.remaining_accounts[0].key(), false));
+            metas.push(AccountMeta::new(ctx.remaining_accounts[1].key(), false));
+            metas.push(AccountMeta::new_readonly(ctx.remaining_accounts[3].key(), false));
+            metas.push(AccountMeta::new_readonly(ctx.remaining_accounts[4].key(), false));
+            metas.push(AccountMeta::new(ctx.remaining_accounts[5].key(), false));
+        }
+        metas
+    };
+    let mut collateral_buy_infos = vec![
+        ctx.accounts.pump_fun_global.to_account_info(),
+        ctx.accounts.pump_fun_fee_recipient.to_account_info(),
+        ctx.accounts.base_mint.to_account_info(),
+        ctx.accounts.pump_fun_bonding_curve.to_account_info(),
+        ctx.accounts.pump_fun_associated_bonding_curve.to_account_info(),
+        ctx.accounts.loan_collateral_vault.to_account_info(),
+        ctx.accounts.loan_execution_wallet.to_account_info(),
+        ctx.accounts.system_program.to_account_info(),
+        ctx.accounts.base_token_program.to_account_info(),
+        ctx.accounts.pump_fun_creator_vault.to_account_info(),
+        ctx.accounts.pump_fun_event_authority.to_account_info(),
+        ctx.accounts.pump_fun_program.to_account_info(),
+    ];
+    if use_create_v2 {
+        collateral_buy_infos.push(ctx.remaining_accounts[0].clone());
+        collateral_buy_infos.push(ctx.remaining_accounts[1].clone());
+        collateral_buy_infos.push(ctx.remaining_accounts[3].clone());
+        collateral_buy_infos.push(ctx.remaining_accounts[4].clone());
+        collateral_buy_infos.push(ctx.remaining_accounts[5].clone());
+    }
+    invoke_signed(
+        &Instruction {
+            program_id: ctx.accounts.pump_fun_program.key(),
+            accounts: collateral_buy_metas,
+            data: build_buy_exact_sol_in_ix_data(
+                loan_quote_spend_amount,
+                collateral_min_base_out,
+            ),
         },
-        &[
-            ctx.accounts.pump_fun_global.to_account_info(),
-            ctx.accounts.pump_fun_fee_recipient.to_account_info(),
-            ctx.accounts.base_mint.to_account_info(),
-            ctx.accounts.pump_fun_bonding_curve.to_account_info(),
-            ctx.accounts.pump_fun_associated_bonding_curve.to_account_info(),
-            ctx.accounts.loan_collateral_vault.to_account_info(),
-            ctx.accounts.loan_execution_wallet.to_account_info(),
-            ctx.accounts.system_program.to_account_info(),
-            ctx.accounts.token_program.to_account_info(),
-            ctx.accounts.pump_fun_creator_vault.to_account_info(),
-            ctx.accounts.pump_fun_event_authority.to_account_info(),
-            ctx.accounts.pump_fun_program.to_account_info(),
-        ],
+        &collateral_buy_infos,
         borrowed_buy_signers,
     )?;
 
@@ -582,20 +823,18 @@ pub fn handle_execute_launch_pump_fun(
             &ctx.accounts.user_extra_quote_token_account,
             &ctx.accounts.owner.to_account_info(),
             &[],
-            &ctx.accounts.pump_fun_quote_sink_authority,
-            quote_sink_authority_signers,
-            &ctx.accounts.pump_fun_user_temporary_wsol_vault,
-            user_temp_wsol_signers,
+            &ctx.accounts.owner.to_account_info(),
+            &[],
+            &ctx.accounts.pump_fun_loan_temporary_wsol_vault,
+            loan_temp_wsol_signers,
             &ctx.accounts.owner.to_account_info(),
             extra_user_quote_spend_amount,
-            &ctx.accounts.token_program,
+            &ctx.accounts.quote_token_program,
             &ctx.accounts.system_program,
         )?;
 
-        invoke_signed(
-            &Instruction {
-                program_id: ctx.accounts.pump_fun_program.key(),
-                accounts: vec![
+        let user_buy_metas = {
+            let mut metas = vec![
                     AccountMeta::new_readonly(ctx.accounts.pump_fun_global.key(), false),
                     AccountMeta::new(ctx.accounts.pump_fun_fee_recipient.key(), false),
                     AccountMeta::new(ctx.accounts.base_mint.key(), false),
@@ -604,33 +843,51 @@ pub fn handle_execute_launch_pump_fun(
                     AccountMeta::new(ctx.accounts.user_base_token_account.key(), false),
                     AccountMeta::new(ctx.accounts.owner.key(), true),
                     AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
-                    AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
+                    AccountMeta::new_readonly(ctx.accounts.base_token_program.key(), false),
                     AccountMeta::new(ctx.accounts.pump_fun_creator_vault.key(), false),
                     AccountMeta::new_readonly(ctx.accounts.pump_fun_event_authority.key(), false),
                     AccountMeta::new_readonly(ctx.accounts.pump_fun_program.key(), false),
-                ],
-                data: build_ix_data(
-                    "buy_exact_sol_in",
-                    &PumpFunBuyExactSolInIxArgs {
-                        quote_spend_amount: extra_user_quote_spend_amount,
-                        min_base_output_amount: immediate_user_min_base_out,
-                    },
-                )?,
+            ];
+            if use_create_v2 {
+                metas.push(AccountMeta::new_readonly(ctx.remaining_accounts[0].key(), false));
+                metas.push(AccountMeta::new(ctx.remaining_accounts[2].key(), false));
+                metas.push(AccountMeta::new_readonly(ctx.remaining_accounts[3].key(), false));
+                metas.push(AccountMeta::new_readonly(ctx.remaining_accounts[4].key(), false));
+                metas.push(AccountMeta::new(ctx.remaining_accounts[5].key(), false));
+            }
+            metas
+        };
+        let mut user_buy_infos = vec![
+            ctx.accounts.pump_fun_global.to_account_info(),
+            ctx.accounts.pump_fun_fee_recipient.to_account_info(),
+            ctx.accounts.base_mint.to_account_info(),
+            ctx.accounts.pump_fun_bonding_curve.to_account_info(),
+            ctx.accounts.pump_fun_associated_bonding_curve.to_account_info(),
+            ctx.accounts.user_base_token_account.to_account_info(),
+            ctx.accounts.owner.to_account_info(),
+            ctx.accounts.system_program.to_account_info(),
+            ctx.accounts.base_token_program.to_account_info(),
+            ctx.accounts.pump_fun_creator_vault.to_account_info(),
+            ctx.accounts.pump_fun_event_authority.to_account_info(),
+            ctx.accounts.pump_fun_program.to_account_info(),
+        ];
+        if use_create_v2 {
+            user_buy_infos.push(ctx.remaining_accounts[0].clone());
+            user_buy_infos.push(ctx.remaining_accounts[2].clone());
+            user_buy_infos.push(ctx.remaining_accounts[3].clone());
+            user_buy_infos.push(ctx.remaining_accounts[4].clone());
+            user_buy_infos.push(ctx.remaining_accounts[5].clone());
+        }
+        invoke_signed(
+            &Instruction {
+                program_id: ctx.accounts.pump_fun_program.key(),
+                accounts: user_buy_metas,
+                data: build_buy_exact_sol_in_ix_data(
+                    extra_user_quote_spend_amount,
+                    immediate_user_min_base_out,
+                ),
             },
-            &[
-                ctx.accounts.pump_fun_global.to_account_info(),
-                ctx.accounts.pump_fun_fee_recipient.to_account_info(),
-                ctx.accounts.base_mint.to_account_info(),
-                ctx.accounts.pump_fun_bonding_curve.to_account_info(),
-                ctx.accounts.pump_fun_associated_bonding_curve.to_account_info(),
-                ctx.accounts.user_base_token_account.to_account_info(),
-                ctx.accounts.owner.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-                ctx.accounts.token_program.to_account_info(),
-                ctx.accounts.pump_fun_creator_vault.to_account_info(),
-                ctx.accounts.pump_fun_event_authority.to_account_info(),
-                ctx.accounts.pump_fun_program.to_account_info(),
-            ],
+            &user_buy_infos,
             &[],
         )?;
     }
@@ -717,14 +974,14 @@ pub struct ExecuteLaunchPumpFun<'info> {
         seeds = [b"loan_quote_vault", loan_position.key().as_ref()],
         bump,
         token::mint = quote_mint,
-        token::token_program = token_program
+        token::token_program = quote_token_program
     )]
     pub loan_quote_vault: Box<InterfaceAccount<'info, TokenAccount>>,
 
     #[account(
         mut,
         token::mint = quote_mint,
-        token::token_program = token_program
+        token::token_program = quote_token_program
     )]
     pub user_extra_quote_token_account: Box<InterfaceAccount<'info, TokenAccount>>,
 
@@ -732,13 +989,6 @@ pub struct ExecuteLaunchPumpFun<'info> {
     /// that the account is executable and relies on ABI compatibility at runtime.
     #[account(executable)]
     pub pump_fun_program: UncheckedAccount<'info>,
-
-    /// CHECK: Internal PDA authority used by `moono` for temporary WSOL bridge vaults.
-    #[account(
-        seeds = [b"quote_sink_authority", loan_position.key().as_ref()],
-        bump
-    )]
-    pub pump_fun_quote_sink_authority: UncheckedAccount<'info>,
 
     /// CHECK: Pump.fun global account / placeholder in tests.
     pub pump_fun_global: UncheckedAccount<'info>,
@@ -751,13 +1001,6 @@ pub struct ExecuteLaunchPumpFun<'info> {
     #[account(mut)]
     pub pump_fun_associated_bonding_curve: UncheckedAccount<'info>,
 
-    /// CHECK: Metaplex token metadata program.
-    pub pump_fun_mpl_token_metadata: UncheckedAccount<'info>,
-
-    /// CHECK: Metadata account passed to create/create_v2.
-    #[account(mut)]
-    pub pump_fun_metadata: UncheckedAccount<'info>,
-
     /// CHECK: Temporary WSOL vault for the loan-funded buy path
     #[account(
         mut,
@@ -765,14 +1008,6 @@ pub struct ExecuteLaunchPumpFun<'info> {
         bump
     )]
     pub pump_fun_loan_temporary_wsol_vault: UncheckedAccount<'info>,
-
-    /// CHECK: Temporary WSOL vault for the user-funded buy path
-    #[account(
-        mut,
-        seeds = [b"temp_wsol_vault", loan_position.key().as_ref(), b"user"],
-        bump
-    )]
-    pub pump_fun_user_temporary_wsol_vault: UncheckedAccount<'info>,
 
     /// CHECK: Fixed mint authority PDA expected by the pump.fun-compatible program
     pub pump_fun_mint_authority: UncheckedAccount<'info>,
@@ -788,6 +1023,26 @@ pub struct ExecuteLaunchPumpFun<'info> {
     #[account(mut)]
     pub pump_fun_creator_vault: UncheckedAccount<'info>,
 
+    /// CHECK: Pump.fun create_v2 mayhem program.
+    #[account(mut)]
+    pub pump_fun_mayhem_program: UncheckedAccount<'info>,
+
+    /// CHECK: Pump.fun create_v2 global params account.
+    #[account(mut)]
+    pub pump_fun_global_params: UncheckedAccount<'info>,
+
+    /// CHECK: Pump.fun create_v2 sol vault.
+    #[account(mut)]
+    pub pump_fun_sol_vault: UncheckedAccount<'info>,
+
+    /// CHECK: Pump.fun create_v2 mayhem state account.
+    #[account(mut)]
+    pub pump_fun_mayhem_state: UncheckedAccount<'info>,
+
+    /// CHECK: Pump.fun create_v2 mayhem token vault account.
+    #[account(mut)]
+    pub pump_fun_mayhem_token_vault: UncheckedAccount<'info>,
+
     /// CHECK: Must be the ATA of `loan_execution_wallet` for `base_mint`
     #[account(mut)]
     pub loan_collateral_vault: UncheckedAccount<'info>,
@@ -796,10 +1051,9 @@ pub struct ExecuteLaunchPumpFun<'info> {
     #[account(mut)]
     pub user_base_token_account: UncheckedAccount<'info>,
 
-    pub token_program: Interface<'info, TokenInterface>,
+    pub quote_token_program: Interface<'info, TokenInterface>,
+    pub base_token_program: Interface<'info, TokenInterface>,
     /// CHECK: Associated token program used both for ATA creation and create/create_v2 CPI layout.
     pub associated_token_program: UncheckedAccount<'info>,
-    /// CHECK: Rent sysvar required by pump.fun create/create_v2 layout.
-    pub rent: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }

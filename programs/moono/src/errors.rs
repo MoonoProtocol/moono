@@ -100,4 +100,7 @@ pub enum MoonoError {
 
     #[msg("Invalid token account")]
     InvalidTokenAccount,
+
+    #[msg("Invalid pump.fun account")]
+    InvalidPumpFunAccount,
 }

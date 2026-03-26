@@ -1,13 +1,23 @@
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::program::invoke_signed;
 use anchor_lang::solana_program::program_option::COption;
+use anchor_lang::solana_program::program_pack::Pack;
 use anchor_spl::token_interface::{
     mint_to, transfer_checked, Mint, MintTo, TokenAccount, TokenInterface, TransferChecked,
 };
+use spl_associated_token_account::instruction::create_associated_token_account_idempotent;
+use spl_token_2022::state::Mint as SplMint2022;
 
 declare_id!("pump5khDuXvghyrSQATnojua6ydquBG5fN7FibwHF4e");
 
 const QUOTE_TO_BASE_DIVISOR: u64 = 10_000;
 const INITIAL_CURVE_LIQUIDITY: u64 = 1_000_000_000_000;
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
+pub enum OptionBool {
+    None,
+    Some(bool),
+}
 
 #[account]
 #[derive(InitSpace)]
@@ -16,6 +26,7 @@ pub struct LaunchState {
     pub version: u8,
     pub _padding: [u8; 6],
     pub owner: Pubkey,
+    pub creator: Pubkey,
     pub mint: Pubkey,
     #[max_len(64)]
     pub name: String,
@@ -34,6 +45,7 @@ pub mod mock_pump_fun {
         name: String,
         symbol: String,
         uri: String,
+        creator: Pubkey,
     ) -> Result<()> {
         require!(
             ctx.accounts.base_mint.mint_authority
@@ -51,6 +63,7 @@ pub mod mock_pump_fun {
             ctx.bumps.metadata,
             1,
             ctx.accounts.owner.key(),
+            creator,
             ctx.accounts.base_mint.key(),
             name,
             symbol,
@@ -63,23 +76,74 @@ pub mod mock_pump_fun {
         name: String,
         symbol: String,
         uri: String,
+        creator: Pubkey,
+        _is_mayhem_mode: bool,
+        _is_cashback_enabled: OptionBool,
     ) -> Result<()> {
-        require!(
-            ctx.accounts.base_mint.mint_authority
-                == COption::Some(ctx.accounts.pump_fun_mint_authority.key()),
-            MockPumpFunError::WrongMintAuthority
-        );
-        mint_initial_curve_liquidity(
-            &ctx.accounts.base_mint,
+        if ctx.accounts.base_mint.data_is_empty() {
+            invoke_signed(
+                &anchor_lang::solana_program::system_instruction::create_account(
+                    &ctx.accounts.owner.key(),
+                    &ctx.accounts.base_mint.key(),
+                    Rent::get()?.minimum_balance(SplMint2022::LEN),
+                    SplMint2022::LEN as u64,
+                    &ctx.accounts.token_program.key(),
+                ),
+                &[
+                    ctx.accounts.owner.to_account_info(),
+                    ctx.accounts.base_mint.to_account_info(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+                &[],
+            )?;
+
+            invoke_signed(
+                &spl_token_2022::instruction::initialize_mint2(
+                    &ctx.accounts.token_program.key(),
+                    &ctx.accounts.base_mint.key(),
+                    &ctx.accounts.pump_fun_mint_authority.key(),
+                    None,
+                    6,
+                )?,
+                &[
+                    ctx.accounts.base_mint.to_account_info(),
+                    ctx.accounts.token_program.to_account_info(),
+                ],
+                &[],
+            )?;
+        }
+
+        if ctx.accounts.associated_bonding_curve.data_is_empty() {
+            anchor_lang::solana_program::program::invoke(
+                &create_associated_token_account_idempotent(
+                    &ctx.accounts.owner.key(),
+                    &ctx.accounts.bonding_curve.key(),
+                    &ctx.accounts.base_mint.key(),
+                    &ctx.accounts.token_program.key(),
+                ),
+                &[
+                    ctx.accounts.owner.to_account_info(),
+                    ctx.accounts.associated_bonding_curve.to_account_info(),
+                    ctx.accounts.bonding_curve.to_account_info(),
+                    ctx.accounts.base_mint.to_account_info(),
+                    ctx.accounts.system_program.to_account_info(),
+                    ctx.accounts.token_program.to_account_info(),
+                    ctx.accounts.associated_token_program.to_account_info(),
+                ],
+            )?;
+        }
+        mint_initial_curve_liquidity_unchecked(
+            &ctx.accounts.base_mint.to_account_info(),
             &ctx.accounts.associated_bonding_curve,
             &ctx.accounts.pump_fun_mint_authority,
             &ctx.accounts.token_program,
         )?;
         write_launch_state(
-            &mut ctx.accounts.metadata,
-            ctx.bumps.metadata,
+            &mut ctx.accounts.mayhem_state,
+            ctx.bumps.mayhem_state,
             2,
             ctx.accounts.owner.key(),
+            creator,
             ctx.accounts.base_mint.key(),
             name,
             symbol,
@@ -91,6 +155,7 @@ pub mod mock_pump_fun {
         ctx: Context<BuyExactSolIn>,
         quote_spend_amount: u64,
         min_base_output_amount: u64,
+        _track_volume: u8,
     ) -> Result<()> {
         require!(quote_spend_amount > 0, MockPumpFunError::InvalidAmount);
 
@@ -142,11 +207,47 @@ pub mod mock_pump_fun {
     }
 }
 
+fn mint_initial_curve_liquidity_unchecked<'info>(
+    base_mint: &AccountInfo<'info>,
+    associated_bonding_curve: &UncheckedAccount<'info>,
+    pump_fun_mint_authority: &UncheckedAccount<'info>,
+    token_program: &Interface<'info, TokenInterface>,
+) -> Result<()> {
+    let (_pump_fun_mint_authority, pump_fun_mint_authority_bump) =
+        Pubkey::find_program_address(&[b"mint-authority"], &crate::ID);
+    let pump_fun_mint_authority_bump_seed = [pump_fun_mint_authority_bump];
+    let pump_fun_mint_authority_signer_seeds: &[&[u8]] =
+        &[b"mint-authority", &pump_fun_mint_authority_bump_seed];
+    let pump_fun_mint_authority_signer: &[&[&[u8]]] =
+        &[pump_fun_mint_authority_signer_seeds];
+
+    invoke_signed(
+        &spl_token_2022::instruction::mint_to(
+            &token_program.key(),
+            base_mint.key,
+            &associated_bonding_curve.key(),
+            &pump_fun_mint_authority.key(),
+            &[],
+            INITIAL_CURVE_LIQUIDITY,
+        )?,
+        &[
+            base_mint.clone(),
+            associated_bonding_curve.to_account_info(),
+            pump_fun_mint_authority.to_account_info(),
+            token_program.to_account_info(),
+        ],
+        pump_fun_mint_authority_signer,
+    )?;
+
+    Ok(())
+}
+
 fn write_launch_state<'info>(
     launch_state: &mut Account<'info, LaunchState>,
     launch_state_bump: u8,
     version: u8,
     owner: Pubkey,
+    creator: Pubkey,
     mint: Pubkey,
     name: String,
     symbol: String,
@@ -159,6 +260,7 @@ fn write_launch_state<'info>(
     launch_state.bump = launch_state_bump;
     launch_state.version = version;
     launch_state.owner = owner;
+    launch_state.creator = creator;
     launch_state.mint = mint;
     launch_state.name = name;
     launch_state.symbol = symbol;
@@ -256,8 +358,10 @@ pub struct Create<'info> {
 
 #[derive(Accounts)]
 pub struct CreateV2<'info> {
+    /// CHECK: create_v2 mirrors real pump.fun behavior and may create and initialize
+    /// the mint account inside the instruction when it is still empty.
     #[account(mut)]
-    pub base_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub base_mint: UncheckedAccount<'info>,
 
     /// CHECK: Fixed mock pump.fun mint authority PDA.
     #[account(
@@ -277,19 +381,6 @@ pub struct CreateV2<'info> {
     /// CHECK: Mock global config PDA placeholder.
     pub global: UncheckedAccount<'info>,
 
-    /// CHECK: Metaplex metadata program placeholder.
-    pub mpl_token_metadata: UncheckedAccount<'info>,
-
-    #[account(
-        init,
-        payer = owner,
-        space = 8 + LaunchState::INIT_SPACE,
-        seeds = [b"metadata", base_mint.key().as_ref()],
-        bump
-    )]
-    pub metadata: Account<'info, LaunchState>,
-
-    /// CHECK: Mayhem program placeholder to mirror pump.fun create_v2 layout.
     #[account(mut)]
     pub owner: Signer<'info>,
 
@@ -297,9 +388,27 @@ pub struct CreateV2<'info> {
     pub token_program: Interface<'info, TokenInterface>,
     /// CHECK: Associated token program placeholder to mirror pump.fun create_v2 layout.
     pub associated_token_program: UncheckedAccount<'info>,
-    /// CHECK: Rent sysvar placeholder.
-    pub rent: UncheckedAccount<'info>,
-    /// CHECK: Mock event authority PDA placeholder.
+    /// CHECK: Mayhem program placeholder to mirror pump.fun create_v2 layout.
+    pub mayhem_program: UncheckedAccount<'info>,
+
+    /// CHECK: Writable global params placeholder to mirror pump.fun create_v2 layout.
+    #[account(mut)]
+    pub global_params: UncheckedAccount<'info>,
+    /// CHECK: Writable SOL vault placeholder to mirror pump.fun create_v2 layout.
+    #[account(mut)]
+    pub sol_vault: UncheckedAccount<'info>,
+    #[account(
+        init,
+        payer = owner,
+        space = 8 + LaunchState::INIT_SPACE,
+        seeds = [b"mayhem-state", base_mint.key().as_ref()],
+        bump
+    )]
+    pub mayhem_state: Account<'info, LaunchState>,
+    /// CHECK: Writable mayhem token vault placeholder to mirror pump.fun create_v2 layout.
+    #[account(mut)]
+    pub mayhem_token_vault: UncheckedAccount<'info>,
+    /// CHECK: Mock event authority PDA placeholder to mirror pump.fun create_v2 layout.
     pub event_authority: UncheckedAccount<'info>,
     /// CHECK: Self program account placeholder.
     pub program: UncheckedAccount<'info>,
